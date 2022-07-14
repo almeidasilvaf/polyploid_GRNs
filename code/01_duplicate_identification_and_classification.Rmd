@@ -1,0 +1,605 @@
+---
+title: "Identification and classification of duplicated genes"
+author: "Fabricio Almeida-Silva"
+date: "`r Sys.Date()`"
+output: BiocStyle::pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+    echo = TRUE,
+    warning = FALSE, 
+    message = FALSE,
+    eval = FALSE,
+    tidy.opts = list(width.cutoff = 60),
+    tidy = TRUE
+)
+```
+
+```{r here, eval = TRUE}
+library(here)
+source(here("code", "utils.R"))
+library(doubletrouble)
+library(tidyverse)
+library(syntenet)
+
+set.seed(123) # for reproducibility
+```
+
+# Overview
+
+Here, we will describe the code to:
+
+1. Identify duplicate gene pairs;
+2. Classify duplicate gene pairs as **WGD-derived pairs** or 
+**SSD-derived pairs**;
+3. Calculate Ka, Ks, and Ka/Ks for each duplicate pair;
+4. Separate duplicate pairs by Ks peaks;
+5. Classify duplicated genes as **WGD-derived genes** or **SSD-derived genes**;
+
+
+# Identication and classification of duplicate gene pairs
+
+Here, we will identify duplicate pairs and classify them with 
+`r BiocStyle::Biocpkg("doubletrouble")`. We will use a binary
+classification scheme, so duplicate pairs will be classified as either
+**WGD-derived** or **SSD-derived**.
+
+```{r duplicate_pairs_identification}
+#----Load sequence and annotation data------------------------------------------
+load(here("data", "annotation.rda"))
+proteomes <- get_proteomes()
+
+#----Process input data---------------------------------------------------------
+check_input(proteomes, annotation)
+pdata <- process_input(proteomes, annotation)
+
+#----Run DIAMOND only within species--------------------------------------------
+diamond_output <- here("products", "result_files", "blast_intra.rda")
+if(!file.exists(diamond_output)) {
+    blast_intra <- lapply(seq_along(pdata$seq), function(x) {
+        
+        l <- list(pdata$seq[[x]])
+        species <- names(pdata$seq)[x]
+        names(l) <- species
+        
+        blast <- run_diamond(seq = l, ... = "--sensitive")
+        blast <- blast[paste0(species, "_", species)]
+        return(blast)
+    })
+    blast_intra <- Reduce(c, blast_intra)
+    
+    # Save object to file
+    save(blast_intra, file = diamond_output, compress = "xz")
+} else {
+    load(diamond_output)
+}
+
+#----Get anchor pairs-----------------------------------------------------------
+anchors <- get_anchors_list(
+    blast_list = blast_intra,
+    annotation = pdata$annotation
+)
+save(anchors,
+     file = here("products", "result_files", "anchor_pairs_all_species.rda"),
+     compress = "xz")
+
+#----Classify duplicate pairs---------------------------------------------------
+class_duplicate_pairs <- classify_gene_pairs(
+    blast_list = blast_intra, 
+    annotation = pdata$annotation,
+    binary = TRUE
+)
+save(class_duplicate_pairs,
+     file = here("products", "result_files", "classified_dup_pairs.rda"),
+     compress = "xz")
+```
+
+Now, let's explore some descriptive statistics per species.
+
+```{r dup_pairs_stats, eval = TRUE, fig.width = 10, fig.height = 6}
+library(tidyverse)
+load(here("products", "result_files", "classified_dup_pairs.rda"))
+
+# Count frequency of WGD and SSD-derived pairs per species
+dup_stats <- lapply(seq_along(class_duplicate_pairs), function(x) {
+    stats <- class_duplicate_pairs[[x]] %>%
+        count(type) %>%
+        mutate(Species = names(class_duplicate_pairs)[x])
+    return(stats)
+})
+dup_stats <- Reduce(rbind, dup_stats)
+names(dup_stats) <- c("Mode", "Frequency", "Species")
+
+# Visualize results as a table
+dup_stats %>%
+    tidyr::pivot_wider(., names_from = Mode, values_from = Frequency) %>%
+    knitr::kable()
+
+# Visualize results as a barplot
+dup_stats_plot <- ggplot(dup_stats, aes(x = Mode, y = Frequency, fill = Mode)) +
+    geom_bar(stat = "identity", color = "black") +
+    scale_y_continuous(labels = scales::label_number(suffix = "K", scale = 1e-3)) +
+    theme_bw() +
+    facet_wrap(~Species, scales = "free", nrow = 2) +
+    scale_fill_manual(values=c('#999999','#E69F00')) +
+    theme(legend.position = "none") +
+    labs(
+        title = "Number of duplicated gene pairs per mode in each species"
+    )
+    
+dup_stats_plot
+```
+
+```{r}
+# Save plot
+ggsave(
+    dup_stats_plot,
+    file = here("products", "plots", "duplicates_stats.png"),
+    dpi = 300, width = 10, height = 6
+)
+```
+
+# Calculating Ka, Ks, and Ka/Ks for gene pairs
+
+Here, we will use [this pipeline](https://github.com/qiao-xin/Scripts_for_GB/tree/master/calculate_Ka_Ks_pipeline), which is associated with the following paper:
+
+> Qiao, X., Li, Q., Yin, H., Qi, K., Li, L., Wang, R., ... & Paterson, A. H. (2019). Gene duplication and evolution in recurring polyploidization–diploidization cycles in plants. Genome biology, 20(1), 1-23.
+
+This pipeline requires the following external dependencies:
+
+- BioPerl
+- PAL2NAL
+- MAFFT
+- KaKs_Calculator
+
+The Ka/Ks calculation pipeline requires only
+2 files:
+
+- FASTA file with CDS
+- A tab-separated table with duplicate pairs
+
+We will export our R objects as temporary files, run the Perl script using
+the temporary files as input, and then delete these files. We will only
+keep the output file.
+
+```{r export_files}
+# Export CDS files to a directory named CDS/
+cds_dir <- file.path(tempdir(), "cds")
+if(!dir.exists(cds_dir)) { dir.create(cds_dir, recursive = TRUE) }
+cds <- get_cds()
+export_cds <- lapply(seq_along(cds), function(x) {
+    
+    # Get file name
+    filename <- paste0(names(cds)[[x]], ".fasta")
+    
+    # Export FASTA file
+    Biostrings::writeXStringSet(
+        cds[[x]],
+        filepath = file.path(cds_dir, filename)
+    )
+    return(NULL)
+})
+
+
+# Export duplicates to a directory named pairs/
+pairs_dir <- file.path(tempdir(), "pairs")
+if(!dir.exists(pairs_dir)) { dir.create(pairs_dir, recursive = TRUE) }
+load(here("products", "result_files", "classified_dup_pairs.rda"))
+export_pairs <- lapply(seq_along(class_duplicate_pairs), function(x) {
+    
+    pairs <- class_duplicate_pairs[[x]]
+    # Make it match the format required by the pipeline
+    pairs <- data.frame(
+        Duplicate1 = gsub("^[a-zA-Z]{3}_", "", pairs$dup1),
+        Location = "Chr",
+        Duplicate2 = gsub("^[a-zA-Z]{3}_", "", pairs$dup2),
+        Location = "Chr",
+        Evalue = 0.0
+    )
+    
+    # Define path to output file
+    filename <- paste0(names(class_duplicate_pairs)[[x]], ".pairs")
+    outfile <- file.path(pairs_dir, filename)
+    readr::write_tsv(
+        pairs,
+        file = outfile
+    )
+    return(NULL)
+})
+```
+
+```{bash movedir, echo = FALSE}
+# Bash
+
+# Copy directory to the server, where I will run the pipeline
+cd /tmp/Rtmpbl7OX0 # this will change depending on the R session.
+
+scp -r cds/ midas.psb.ugent.be:/home/faalm/projects/polyploid_GRN
+scp -r pairs/ midas.psb.ugent.be:/home/faalm/projects/polyploid_GRN
+```
+
+Now, let's download the pipeline.
+
+```{bash load_modules}
+# Bash
+# Download pipeline
+wget https://raw.githubusercontent.com/qiao-xin/Scripts_for_GB/master/calculate_Ka_Ks_pipeline/calculate_Ka_Ks_pipe.pl
+
+wget https://raw.githubusercontent.com/qiao-xin/Scripts_for_GB/master/calculate_Ka_Ks_pipeline/fa_prepareDATA4_kaks_calculator.pl
+
+wget https://raw.githubusercontent.com/qiao-xin/Scripts_for_GB/master/calculate_Ka_Ks_pipeline/parseFastaIntoAXT.pl
+
+# Grant execute permission to all Perl scripts
+chmod a+x *.pl
+
+# Create output directory for Ka/Ks values
+mkdir output_kaks
+```
+
+Now, run the following bash script:
+
+```{bash calculate_ka_ks}
+#!/bin/bash
+module load R/x86_64/4.1.3 gcc libpng perl KaKs_Calculator mafft
+
+# Run the pipeline
+# Usage: perl calculate_Ka_Ks_pipe.pl -d <cdsfile> -g <pairsfile> -o <outfile>
+species=(Athaliana Gmax Osativa Ptrichocarpa Slycopersicum Vvinifera Zmays)
+
+for s in "${species[@]}"
+do
+    perl calculate_Ka_Ks_pipe.pl -d cds/"$s".fasta -g pairs/"$s".pairs -o output_kaks/"$s"
+    rm output_kaks/"$s".axt # Remove .axt file - too big and unnecessary
+done
+```
+
+On the server, it can be executed with:
+
+```{bash}
+qsub -l h_vmem=50G calculate_ka_ks.sh
+```
+
+Now, let's read the output of `KaKs_Calculator` and save it as R objects.
+
+```{r read_kaks}
+# Read KaKs Calculator output and add duplication mode in another column
+load(here("products", "result_files", "classified_dup_pairs.rda"))
+species <- names(class_duplicate_pairs)
+
+duplicate_pairs <- lapply(species, function(x) {
+    
+    message("Working on ", x)
+    # Read KaKs Calculator output
+    file <- here("output_kaks", x)
+    kaks <- read.csv(file, header = FALSE, sep = "\t", skip = 2)
+    names(kaks) <- c("dup1", "dup2", "ka", "ks", "kaks", "pvalue")
+    
+    # 1) Prepare object of duplicate pairs and modes for merging
+    duplicates <- class_duplicate_pairs[[x]]
+    duplicates$dup1 <- gsub("^[a-zA-Z]{3}_", "", duplicates$dup1)
+    duplicates$dup2 <- gsub("^[a-zA-Z]{3}_", "", duplicates$dup2)
+    duplicates$pair <- paste0(duplicates$dup1, "_", duplicates$dup2)
+    
+    # 2) Prepare object of pairs and Ka/Ks values for merging
+    kaks$pair <- paste0(kaks$dup1, "_", kaks$dup2) 
+    
+    # Merge objects
+    duplicates_kaks <- merge(duplicates, kaks, by = "pair")
+    dup_kaks_final <- duplicates_kaks[, c("dup1.x", "dup2.x", "type",
+                                          "ka", "ks", "kaks", "pvalue")]
+    names(dup_kaks_final)[1:2] <- c("dup1", "dup2")
+    
+    return(dup_kaks_final)
+})
+names(duplicate_pairs) <- species
+
+save(
+    duplicate_pairs,
+    file = here("data", "duplicate_pairs.rda"),
+    compress = "xz"
+)
+```
+
+# Classifying duplicate pairs by Ks peak
+
+Here, we will split Ks pairs based on the Ks peak to which they belong (if
+there are more than 1). This is required to account for the impact of age
+in the number of connections in the network.
+
+Here, we will use the following number of peaks for each species, based on
+previous works from Qiao et al., 2019. Genome Biology:
+
+- *Glycine max*: 2 peaks
+- *Oryza sativa:* 2 peaks
+- *Zea mays*: 3 peaks
+- *Solanum lycopersicum*: 2 peaks
+- *Arabidopsis thaliana*: 2 peaks
+- *Populus trichocarpa*: 2 or 3 peaks (if considering gamma-WGT)
+- *Vitis vinifera*: 1 peak
+
+First, let's identify peaks in Ks distros.
+
+```{r plot_ks, eval = TRUE, fig.width = 16, fig.height = 8}
+load(here("data", "duplicate_pairs.rda"))
+
+# Remove Ks values > 5 and remove NA
+kslist <- lapply(duplicate_pairs, function(x) {
+    y <- x[!is.na(x$ks) & x$ks <= 5, ]
+    return(y)
+})
+
+# Find peaks and plot them
+## Gmax
+gmax_peaks <- find_ks_peaks(
+    kslist$Gmax$ks[kslist$Gmax$ks <= 1], npeaks = 2
+)
+
+ksplot_gmax <- plot_ks_peaks(
+    kslist$Gmax$ks[kslist$Gmax$ks <= 2], gmax_peaks
+) + ggplot2::ggtitle("G. max")
+
+## Slycopersicum
+slycopersicum_peaks <- find_ks_peaks(
+    kslist$Slycopersicum$ks, npeaks = 2
+)
+
+ksplot_slycopersicum <- plot_ks_peaks(
+    kslist$Slycopersicum$ks, slycopersicum_peaks
+) + ggplot2::ggtitle("S. lycopersicum")
+
+
+## Osativa
+osativa_peaks <- find_ks_peaks(
+    kslist$Osativa$ks, npeaks = 2
+)
+
+ksplot_osativa <- plot_ks_peaks(
+    kslist$Osativa$ks, osativa_peaks
+) + ggplot2::ggtitle("O. sativa")
+
+
+## Zmays
+zmays_peaks <- find_ks_peaks(
+    kslist$Zmays$ks, npeaks = 3
+)
+
+ksplot_zmays <- plot_ks_peaks(
+    kslist$Zmays$ks, zmays_peaks
+) + ggplot2::ggtitle("Z. mays")
+
+
+## Athaliana
+athaliana_peaks <- find_ks_peaks(
+    kslist$Athaliana$ks, npeaks = 2
+)
+
+ksplot_athaliana <- plot_ks_peaks(
+    kslist$Athaliana$ks, athaliana_peaks
+) + ggplot2::ggtitle("A. thaliana")
+
+## Ptrichocarpa
+ptrichocarpa_peaks <- find_ks_peaks(
+    kslist$Ptrichocarpa$ks, npeaks = 3
+)
+
+ksplot_ptrichocarpa <- plot_ks_peaks(
+    kslist$Ptrichocarpa$ks, ptrichocarpa_peaks
+) + ggplot2::ggtitle("P. trichocarpa")
+
+## Vvinifera - manually done because k = 1
+vvinifera_peaks <- list(
+    mean = 1.5,
+    sd = 0.4,
+    lambda = 0.28
+)
+
+ksplot_vvinifera <- plot_ks_peaks(
+    kslist$Vvinifera$ks[kslist$Vvinifera$ks <= 3], vvinifera_peaks
+) + ggplot2::ggtitle("V. vinifera")
+
+
+# Combining all plots into one
+ks_plots1 <- patchwork::wrap_plots(
+    ksplot_gmax, ksplot_athaliana, ksplot_ptrichocarpa, ksplot_slycopersicum,
+    nrow = 1
+)
+ks_plots2 <- patchwork::wrap_plots(
+    ksplot_vvinifera, ksplot_osativa, ksplot_zmays,
+    nrow = 1
+)
+
+ks_plots <- ggpubr::ggarrange(
+    ks_plots1, ks_plots2, nrow = 2
+)
+ks_plots <- ggpubr::annotate_figure(
+    ks_plots, 
+    top = ggpubr::text_grob("Ks distribution for species' paranomes", size = 15)
+)
+ks_plots
+```
+
+```{r saving_plots}
+# Save peaks
+ks_peaks <- list(
+    Osativa = osativa_peaks,
+    Gmax = gmax_peaks,
+    Ptrichocarpa = ptrichocarpa_peaks,
+    Athaliana = athaliana_peaks,
+    Vvinifera = vvinifera_peaks,
+    Zmays = zmays_peaks,
+    Slycopersicum = slycopersicum_peaks
+)
+save(
+    ks_peaks,
+    file = here("products", "result_files", "ks_peaks.rda"),
+    compress = "xz"
+)
+
+# Save plots
+ggplot2::ggsave(
+    ks_plots,
+    filename = here("products", "plots", "Ks_plots.png"),
+    dpi = 300, width = 16, height = 8
+)
+```
+
+Now, let's split pairs by peak to which they belong.
+
+```{r split_pairs_by_peak, eval = TRUE, fig.width = 14, fig.height = 8}
+# Osativa
+osativa_spairs <- split_pairs_by_peak(
+    kslist$Osativa[, c("dup1", "dup2", "ks", "type")], osativa_peaks
+)
+
+# Gmax
+gmax_spairs <- split_pairs_by_peak(
+    kslist$Gmax[kslist$Gmax$ks <= 2, c("dup1", "dup2", "ks", "type")], 
+    gmax_peaks
+)
+
+# Slycopersicum
+slycopersicum_spairs <- split_pairs_by_peak(
+    kslist$Slycopersicum[, c("dup1", "dup2", "ks", "type")], 
+    slycopersicum_peaks
+)
+
+# Zmays
+zmays_spairs <- split_pairs_by_peak(
+    kslist$Zmays[, c("dup1", "dup2", "ks", "type")], zmays_peaks
+)
+
+# Vvinifera - done manually, only 1 peak
+vvinifera_spairs <- list(
+    pairs = kslist$Vvinifera[, c("dup1", "dup2", "ks", "type")] %>%
+        filter(ks >= vvinifera_peaks$mean - 2 * vvinifera_peaks$sd &
+                   ks <= vvinifera_peaks$mean + 2 * vvinifera_peaks$sd) %>%
+        mutate(peak = 1),
+    plot = plot_ks_peaks(
+        kslist$Vvinifera$ks[kslist$Vvinifera$ks <= 3], vvinifera_peaks
+    ) + 
+        geom_vline(xintercept = vvinifera_peaks$mean - 2 * vvinifera_peaks$sd,
+                   color = "brown2", linetype = "dashed") +
+        geom_vline(xintercept = vvinifera_peaks$mean + 2 * vvinifera_peaks$sd,
+                   color = "brown2", linetype = "dashed") +
+        ggtitle("Ks distribution for V. vinifera paranome")
+    
+)
+
+# Ptrichocarpa
+ptrichocarpa_spairs <- split_pairs_by_peak(
+    kslist$Ptrichocarpa[, c("dup1", "dup2", "ks", "type")], ptrichocarpa_peaks
+)
+
+# Athaliana
+athaliana_spairs <- split_pairs_by_peak(
+    kslist$Athaliana[, c("dup1", "dup2", "ks", "type")], athaliana_peaks
+)
+
+# Combine all plots into one
+ks_plots_with_boundaries1 <- patchwork::wrap_plots(
+    gmax_spairs$plot + ggtitle("G. max"),
+    athaliana_spairs$plot + ggtitle("A. thaliana"),
+    ptrichocarpa_spairs$plot + ggtitle("P. trichocarpa"),
+    slycopersicum_spairs$plot + ggtitle("S. lycopersicum"),
+    nrow = 1
+)
+ks_plots_with_boundaries2 <- patchwork::wrap_plots(
+    vvinifera_spairs$plot + ggtitle("V. vinifera"),
+    osativa_spairs$plot + ggtitle("O. sativa"),
+    zmays_spairs$plot + ggtitle("Z. mays"),
+    nrow = 1
+)
+
+ks_plots_with_boundaries <- ggpubr::ggarrange(
+    ks_plots_with_boundaries1, 
+    ks_plots_with_boundaries2,
+    nrow = 2
+)
+ks_plots_with_boundaries <- ggpubr::annotate_figure(
+    ks_plots_with_boundaries,
+    top = ggpubr::text_grob(
+        "Ks distribution for species' paranomes with peak boundaries",
+        size = 16
+    )
+)
+ks_plots_with_boundaries
+```
+
+```{r}
+# Save plots
+ggsave(
+    ks_plots_with_boundaries,
+    file = here("products", "plots", "ks_plots_with_boundaries.png"),
+    dpi = 300, width = 16, height = 8
+)
+
+# Save objects
+duplicate_pairs_with_boundaries <- list(
+    Gmax = gmax_spairs$pairs,
+    Athaliana = athaliana_spairs$pairs,
+    Ptrichocarpa = ptrichocarpa_spairs$pairs,
+    Slycopersicum = slycopersicum_spairs$pairs,
+    Vvinifera = vvinifera_spairs$pairs,
+    Osativa = osativa_spairs$pairs,
+    Zmays = zmays_spairs$pairs
+)
+
+save(
+    duplicate_pairs_with_boundaries,
+    file = here("products", "result_files", "duplicate_pairs_with_boundaries.rda"),
+    compress = "xz"
+)
+```
+
+Finally, let's get duplicated genes from duplicate pairs. That is, we will get 
+a list of unique genes assigned to each mode of duplication.
+
+```{r classify_genes}
+# Classify duplicated genes
+load(here("products", "result_files", "duplicate_pairs_with_boundaries.rda"))
+
+duplicated_genes <- lapply(duplicate_pairs_with_boundaries, function(x) {
+    
+    # Create a list for each peak
+    pairs_list <- x
+    pairs_list$ks <- NULL
+    names(pairs_list) <- c("dup1", "dup2", "type", "peak")
+    pairs_list <- split(pairs_list, pairs_list$peak)
+    
+    # Classify duplicated genes for each peak
+    dup_genes <- Reduce(rbind, lapply(pairs_list, function(y) {
+        peak_id <- unique(y$peak)
+        dups <- y
+        dups$peak <- NULL
+        dups <- list(dups)
+        class_dups <- classify_genes(dups)[[1]]
+        class_dups$peak <- peak_id
+        return(class_dups)
+    }))
+    
+    ref <- c("WGD", "SSD")
+    dups <- dup_genes[order(match(dup_genes$type, ref)), ]
+    dups <- dup_genes[!duplicated(dup_genes$gene), ]
+    return(dups)
+})
+
+str(duplicated_genes)
+```
+
+```{r}
+# Save object
+save(
+    duplicated_genes,
+    file = here("data", "duplicated_genes.rda"),
+    compress = "xz"
+)
+```
+
+# Session info
+
+This document was created under the following conditions:
+
+```{r sessioninfo, eval = TRUE}
+sessioninfo::session_info()
+```
