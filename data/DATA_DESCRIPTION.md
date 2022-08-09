@@ -56,6 +56,69 @@ expression_data <- lapply(expression_data, function(x) {
 rownames(expression_data$Slycopersicum) <- gsub(
     "\\.[0-9]$", "", rownames(expression_data$Slycopersicum)
 )
+```
+
+The IDs for *V. vinifera* are based on a different assembly. To get the
+latest IDs, we will map these IDs to UniProt IDs, and then use the
+Uniprot IDs to get the latest IDs.
+
+``` r
+# Export gene list
+gene_name_df <- data.frame(
+    Genes = rownames(expression_data$Vvinifera)
+)
+readr::write_tsv(
+    gene_name_df,
+    file = "~/Downloads/vvinifera_old_gene_names.tsv"
+)
+```
+
+Now, go to <https://www.uniprot.org/id-mapping> and upload the file
+`vvinifera_old_gene_names.tsv`. In the **From database** button, click
+on *Uniprot \> Gene Name*. In *To database*, leave it as *UniProtKB*.
+
+Then, download the results to a .tsv file and load it.
+
+``` r
+# Read ID conversion result file
+uniprot_vvi <- readr::read_tsv(
+    "~/Downloads/uniprot-compressed_true_download_true_fields_accession_2Creviewed_2C-2022.07.19-08.09.18.42.tsv.gz",
+    show_col_types = FALSE
+)
+uniprot_vvi <- as.data.frame(uniprot_vvi)[, 1:2]
+
+# Get mapping between UniProt IDs and new assembly
+library(biomaRt)
+ensembl <- useEnsemblGenomes(biomart = "plants_mart")
+datasets <- listDatasets(ensembl)
+ensembl_dataset <- useEnsemblGenomes(
+    biomart = "plants_mart", 
+    dataset = "vvinifera_eg_gene"
+)
+
+vvini_uniprot_new <- getBM(
+    attributes = c("ensembl_gene_id", "uniprotsptrembl"),
+    mart = ensembl_dataset
+)
+
+# Merge ID mapping data frames to get mapping between old and new assembly
+vvi_id_conversion <- merge(
+    vvini_uniprot_new, uniprot_vvi, 
+    by.x = "uniprotsptrembl", by.y = "Entry"
+)
+vvi_id_conversion <- vvi_id_conversion[, 2:3]
+names(vvi_id_conversion) <- c("New", "Old")
+
+# Replace old IDs in gene expression matrix with new IDs
+vvi_exp <- as.data.frame(expression_data$Vvinifera)
+vvi_exp$Old <- rownames(vvi_exp)
+
+vvi_exp <- merge(vvi_exp, vvi_id_conversion)
+vvi_exp <- vvi_exp[!duplicated(vvi_exp$New), ]
+rownames(vvi_exp) <- vvi_exp$New
+vvi_exp$Old <- NULL
+vvi_exp$New <- NULL
+expression_data$Vvinifera <- as.matrix(vvi_exp)
 
 # Save data
 save(
