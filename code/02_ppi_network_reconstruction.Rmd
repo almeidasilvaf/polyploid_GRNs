@@ -1,0 +1,575 @@
+---
+title: "PPI network reconstruction and analysis"
+author: "Fabricio Almeida-Silva"
+date: "`r Sys.Date()`"
+output: BiocStyle::pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+    echo = TRUE,
+    warning = FALSE, 
+    message = FALSE,
+    eval = FALSE,
+    tidy.opts = list(width.cutoff = 60),
+    tidy = TRUE
+)
+```
+
+```{r load_packages, eval = TRUE}
+library(here)
+library(tidyverse)
+library(igraph)
+library(BioNERO)
+library(ggpubr)
+library(ggstatsplot)
+set.seed(123)
+dup_palette <- c("#1984c5", "#ffb400")
+```
+
+# Overview
+
+Here, we will describe the code to:
+
+1. Obtain PPI networks for each species
+2. Filter PPI networks
+3. Explore network properties of PPI networks, such as degree,
+scale-free topology fit, and number interacting paralogs over time.
+
+# Obtaining PPI networks
+
+Here, we will get PPI networks from STRING db (physical links only) 
+and filter it to only contain edges with confidence level > 0.5 (500).
+STRING protein IDs will be converted to Ensembl gene IDs [^1].
+
+[^1]: For *Vitis vinifera*, the mapping between STRING IDs and Ensembl gene IDs
+was obtained from BioMart on the Ensembl Plants release 53 web page and
+saved to *result_files/vvinifera_mapping_string_ensembl.tsv*. To obtain it, go
+to https://plants.ensembl.org/index.html, and click on 
+`BioMart > Ensembl Plants Genes 54 > Vitis vinifera > Attributes > External References`,
+then tick `STRING ID`, click on `Results`, then `Go`.
+
+```{r get_ppi}
+load(here("data", "duplicate_pairs.rda"))
+load(here("data", "annotation.rda"))
+
+source(here("code", "utils.R"))
+
+# Species and their NCBI IDs
+id_map <- c(
+    Gmax = 3847,
+    Ptrichocarpa = 3694,
+    Zmays = 4577,
+    Osativa = 4530,
+    Athaliana = 3702,
+    Vvinifera = 29760,
+    Slycopersicum = 4081
+)
+
+# Define function to create PPI network of paralogs from STRINGdb for a species
+stringdb2paralogsppi <- function(species_id, threshold = 500, 
+                                 id_map, duplicate_pairs, annotation) {
+    
+    # Get PPI and alias URLs based on species ID
+    url_ppi <- paste0(
+        "https://stringdb-static.org/download/protein.physical.links.v11.5/",
+        species_id, ".protein.physical.links.v11.5.txt.gz"
+    )
+    
+    url_alias <- paste0(
+        "https://stringdb-static.org/download/protein.aliases.v11.5/",
+        species_id, ".protein.aliases.v11.5.txt.gz"
+    )
+    
+    # Read PPI network and alias, and filter PPI based on threshold
+    alias <- vroom::vroom(url_alias, delim = "\t", show_col_types = FALSE)
+    ppi <- vroom::vroom(url_ppi, delim = " ", show_col_types = FALSE) %>%
+        dplyr::filter(combined_score >= threshold)
+
+    # Convert STRING IDs to Ensembl IDs
+    species <- names(id_map)[id_map == species_id]
+    fppi <- stringdb2ensembl(ppi, alias, species)
+    names(fppi)[1:2] <- c("dup1", "dup2")
+    
+    # Keep only edges containing duplicated gene pairs
+    pairs <- duplicate_pairs[[species]]
+    pairs$pvalue <- NULL
+    pairs_ppi <- merge(pairs, fppi, by = c("dup1", "dup2")) # 1 and 2
+    
+    # Remove genes that are not present in annotation
+    gene_list <- unique(annotation[[species]]$gene_id)
+    pairs_ppi <- pairs_ppi[pairs_ppi$dup1 %in% gene_list, ]
+    pairs_ppi <- pairs_ppi[pairs_ppi$dup2 %in% gene_list, ]
+    
+    message("Number of edges for ", species, ": ", nrow(pairs_ppi))
+    return(pairs_ppi)
+}
+
+# Get PPI network for paralogous gene pairs
+ppi <- lapply(id_map, function(x) {
+    paralogs_ppi <- stringdb2paralogsppi(
+        x, 
+        id_map = id_map, 
+        duplicate_pairs = duplicate_pairs,
+        annotation = annotation
+    )
+    return(paralogs_ppi)
+})
+
+# Save PPI networks
+save(
+    ppi,
+    file = here("products", "result_files", "ppi.rda"),
+    compress = "xz"
+)
+```
+
+
+# Topological analysis of PPI networks
+
+Here, we will explore the topology of the PPI networks to:
+
+- check if PPI networks are scale-free
+- compare the degree distribution of WGD- and SSD-derived gene pairs
+
+First, let's count the number of interacting paralogs of each duplication 
+mode for each species.
+
+```{r summarize_ppi}
+# Load PPI network
+load(here("products", "result_files", "ppi.rda"))
+
+# Count
+count_edges <- Reduce(rbind, lapply(seq_along(ppi), function(x) {
+    species <- names(ppi)[x]
+    net <- ppi[[x]]
+    wgd_count <- nrow(net[net$type == "WGD", ])
+    ssd_count <- nrow(net[net$type == "SSD", ])
+    
+    # Count frequency of edges between WGD- and SSD-derived pairs
+    count <- data.frame(
+        Species = species,
+        WGD = wgd_count,
+        SSD = ssd_count
+    )
+    count$Total <- count$WGD + count$SSD
+    
+    # Check if network is scale-free
+    is_scale_free <- BioNERO::check_SFT(net[, c(1,2)])
+    sft <- FALSE
+    if(is_scale_free$KS.p >= 0.05) { sft <- TRUE }
+    
+    count$SFT <- sft
+    
+    return(count)
+}))
+count_edges
+```
+
+As we can see, all networks are scale-free.
+
+```{r save_ppi_summary_stats}
+# Save table
+readr::write_tsv(
+    count_edges,
+    file = here("products", "tables", "ppi_network_summary_stats.tsv")
+)
+```
+
+Now, let's compare if SSD- and WGD-derived pairs differ in terms of degree.
+
+```{r wgd_ssd_degree_comparison, eval = TRUE, fig.width = 22, fig.height=15}
+load(here("data", "duplicated_genes.rda"))
+load(here("products", "result_files", "ppi.rda"))
+
+# Create data frame of degree distribution for each species by duplication mode
+degree_distros <- Reduce(rbind, lapply(seq_along(ppi), function(x) {
+    species <- names(ppi)[x]
+    net <- ppi[[x]]
+    dups <- duplicated_genes[[species]]
+    
+    # Get degree distribution as a data frame
+    degree <- graph_from_data_frame(net[, 1:2]) %>% degree()
+    degree_df <- data.frame(
+        gene = names(degree),
+        degree = degree
+    ) %>% dplyr::inner_join(., dups, by = "gene") %>%
+        dplyr::select(gene, degree, type) %>%
+        dplyr::mutate(species = species)
+    
+    return(degree_df)
+}))
+
+# Visualize degree distributions as a violin plot
+plot_violin <- function(data) {
+    p <- ggbetweenstats(
+        data = data, x = type, y = degree, 
+        type = "nonparametric", pairwise.display = "all", 
+        p.adjust.method = "BH"
+    ) +
+        ggplot2::scale_color_manual(values = dup_palette) +
+        labs(x = "", y = "") +
+        theme(plot.subtitle = element_text(size = 8.5))
+    return(p)
+}
+sdegree_distros <- split(degree_distros, degree_distros$species)
+
+plot_degree_gma <- plot_violin(sdegree_distros$Gmax) + 
+    labs(title = "Glycine max")
+
+plot_degree_ath <- plot_violin(sdegree_distros$Athaliana) + 
+    labs(title = "Arabidopsis thaliana")
+
+plot_degree_ptr <- plot_violin(sdegree_distros$Ptrichocarpa) + 
+    labs(title = "Populus trichocarpa")
+
+plot_degree_sly <- plot_violin(sdegree_distros$Slycopersicum) + 
+    labs(title = "Solanum lycopersicum")
+
+plot_degree_vvi <- plot_violin(sdegree_distros$Vvinifera) + 
+    labs(title = "Vitis vinifera")
+
+plot_degree_osa <- plot_violin(sdegree_distros$Osativa) + 
+    labs(title = "Oryza sativa")
+
+plot_degree_zma <- plot_violin(sdegree_distros$Zmays) + 
+    labs(title = "Zea mays")
+
+# Combine plots
+p_deg_upper <- ggarrange(
+    plot_degree_gma, plot_degree_ath, plot_degree_ptr, 
+    plot_degree_sly, nrow = 1
+)
+p_deg_lower <- ggarrange(
+    plot_degree_vvi, plot_degree_osa, plot_degree_zma, nrow = 1
+)
+p_deg_final <- ggarrange(p_deg_upper, p_deg_lower, nrow = 2)
+p_deg_final <- annotate_figure(
+    p_deg_final,
+    top = text_grob("Degree distribution of WGD- and SSD-derived genes",
+                    size = 15),
+    bottom = text_grob("Mode of duplication"),
+    left = text_grob("Node degree", rot = 90)
+)
+p_deg_final
+```
+
+SSD- and WGD-derived genes do not diverge in degree. This is good, because
+differences in degree distributions could lead to a greater number of motifs
+that is solely due to the greater number of connections.
+
+**Note:** *A. thaliana* seems to be the only exception, with P < 0.03 for
+the Mann-Whitney test, which suggests that there is a difference in degree 
+for WGD- and SSD-derived genes.
+However, the effect size is very small (r rank biserial = 0.07), so the
+difference doesn't have any impact.
+
+```{r save_output}
+# Saving figure and degree distros object
+## Degree distros
+save(
+    degree_distros,
+    file = here("products", "result_files", "degree_distros.rda"),
+    compress = "xz"
+)
+
+## Plot
+ggsave(
+    p_deg_final,
+    file = here("products", "plots", "ppi_network_degree_distros.png"),
+    width = 22, height = 15, dpi = 300
+)
+```
+
+# Exploring hypotheses
+
+Now, we will use data to answer some questions we have.
+
+## Is there any association between duplication type and interaction tendency?
+
+To answer this question, we will perform a Fisher's exact test to test for
+association between the two variables.
+
+```{r hypothesis1, eval = TRUE}
+# Load required data
+load(here("data", "duplicated_genes.rda"))
+load(here("products", "result_files", "ppi.rda"))
+
+# Define function to perform Fisher's exact tests for each species
+fisher_dup_interaction <- function(duplicated_genes, ppi) {
+    
+    species_list <- names(duplicated_genes)
+    test <- Reduce(rbind, lapply(species_list, function(x) {
+        
+        # Define background: all duplicated genes
+        bg <- duplicated_genes[[x]]$gene
+        
+        # Define genes to test and duplication mode 'annotation'
+        genes_that_interact <- unique(c(ppi[[x]]$dup1, ppi[[x]]$dup2))
+        duplicate_annotation <- duplicated_genes[[x]][, c("gene", "type")] 
+        
+        # Perform test
+        enrichment <- BioNERO::enrichment_analysis(
+            genes_that_interact,
+            bg, 
+            annotation = duplicate_annotation,
+            column = "type"
+        )
+        if(!is.null(enrichment)) {
+            enrichment <- enrichment[, c("TermID", "padj")]
+            enrichment$species <- x
+        }
+        return(enrichment)
+    }))
+    return(test)
+}
+
+# Perform test
+dup_ppi_association <- fisher_dup_interaction(
+    duplicated_genes, ppi
+)
+dup_ppi_association
+```
+
+As we can see, the PPI network of *Glycine max*, *P. trichocarpa* and *Z. mays*
+is enriched in WGD-derived genes. That means that WGD-derived genes
+in these species tend to interact more than the expected by chance in a
+scenario where the null hypothesis is true.
+
+
+```{r save_hypothesis1}
+# Save the results to a table
+write_tsv(
+    dup_ppi_association,
+    file = here("products", "tables", 
+                "fisher_test_association_between_duplication_type_and_ppi.tsv")
+)
+```
+
+## Are duplicated genes that interact enriched in any process/domain?
+
+To answer this question, we will perform an enrichment analysis
+for GO-BP terms and InterPro domains using the
+package `r BiocStyle::Biocpkg("BioNERO")`. As background, we will use all
+duplicated genes. We will perform enrichment analyses separately for 
+WGD- and SSD-derived duplicates.
+
+```{r hypothesis2}
+# Load required data
+load(here("products", "result_files", "ppi.rda"))
+load(here("data", "duplicated_genes.rda"))
+load(here("data", "functional_annotation.rda"))
+
+# Define function to perform enrichment analysis for each species
+dup_ppi_sea <- function(duplicated_genes, ppi, mode = "WGD") {
+    
+    species_list <- names(duplicated_genes)
+    enrich <- Reduce(rbind, lapply(species_list, function(x) {
+        
+        # Define background: all duplicated genes
+        bg <- duplicated_genes[[x]]$gene
+        
+        # Define genes to test and duplication mode 'annotation'
+        ppi_dup <- ppi[[x]][ppi[[x]]$type == mode, ]
+        ppi_dup <- unique(c(ppi_dup$dup1, ppi_dup$dup2))
+        
+        annot_gobp <- functional_annotation[[x]]$GOBP
+        annot_gobp <- annot_gobp[annot_gobp$gene %in% bg, ]
+        annot_interpro <- functional_annotation[[x]]$InterPro
+        annot_interpro <- annot_interpro[annot_interpro$gene %in% bg, ]
+        
+        # Perform SEA
+        ## GO
+        enrichment_go <- BioNERO::enrichment_analysis(
+            genes = ppi_dup,
+            background_genes = bg, 
+            annotation = annot_gobp,
+            column = "GO"
+        )
+        if(!is.null(enrichment_go)) {
+            enrichment_go <- enrichment_go[, c("TermID", "padj")]
+            enrichment_go$class <- "GOBP"
+        }
+        ## InterPro
+        enrichment_interpro <- BioNERO::enrichment_analysis(
+            genes = ppi_dup,
+            background_genes = bg,
+            annotation = annot_interpro,
+            column = "interpro"
+        )
+        if(!is.null(enrichment_interpro)) {
+            enrichment_interpro <- enrichment_interpro[, c("TermID", "padj")]
+            enrichment_interpro$class <- "interpro"
+        }
+        
+        enrichment <- rbind(enrichment_go, enrichment_interpro)
+        if(!is.null(enrichment)) {
+            enrichment <- enrichment[, c("TermID", "padj")]
+            enrichment$species <- x
+        }
+        return(enrichment)
+    }))
+    return(enrich)
+}
+
+# Perform enrichment analysis
+wgd_ppi_enrichment <- dup_ppi_sea(
+    duplicated_genes, ppi, mode = "WGD"
+)
+
+ssd_ppi_enrichment <- dup_ppi_sea(
+    duplicated_genes, ppi, mode = "SSD"
+)
+
+# Save enrichment analysis for duplicated genes that interact
+readr::write_tsv(
+    wgd_ppi_enrichment,
+    file = here::here("products", "tables",
+                      "functional_enrichment_wgd_genes_that_interact.tsv")
+)
+readr::write_tsv(
+    ssd_ppi_enrichment,
+    file = here::here("products", "tables",
+                      "functional_enrichment_ssd_genes_that_interact.tsv")
+)
+
+```
+
+A deeper inspection shows that WGD-derived genes that interact at the protein
+level are enriched in process associated to:
+
+- *Glycine max*: lipid metabolism, photosynthesis, heme biosynthesis, 
+signal transduction, glucose oxidation, proteolysis, amino acid oxidation, 
+cutin biosynthesis, cell wall biogenesis, redox homeostasis,
+nucleic acid metabolism, mRNA processing, translation, 
+transcriptional regulation.
+- *A. thaliana*: cell cycle, photosynthesis, signal transduction,
+glucose oxidation, mRNA processing, vesicle trafficking, proteolysis,
+amino acid oxidation, redox homeostasis, translation, lipid metabolism,
+transcriptional regulation.
+- *P. trichocarpa*: lipid metabolism, glucose oxidation, signal transduction,
+amino acid oxidation, photosynthesis, nitrate assimilation, 
+cell wall biogenesis, redox homeostasis, translation, 
+transcriptional regulation.
+- *S. lycopersicum*: photosynthesis, glucose oxidation, lipid metabolism,
+signal transduction
+- *V. vinifera*: signal transduction, lipid metabolism, glucose oxidation,
+redox homeostasis
+- *O. sativa*: cell cycle, signal transduction, translation.
+- *Z. mays*: photosynthesis, glucose oxidation, cell wall biogenesis, 
+translation, signal transduction, redox homeostasis, 
+transcriptional regulation.
+
+
+## Are WGD-derived genes more constrained to evolve divergent functions?
+
+To answer this question, we will explore sequence divergence over time
+for WGD- and SSD-derived genes. Ka will be used as a proxy for 
+sequence divergence, and Ks will be used to represent time. We will
+fit Michaelis-Menten curves to the scatterplot.
+
+```{r hypothesis3, eval = TRUE, fig.width = 15, fig.height=8}
+load(here("products", "result_files", "ppi.rda"))
+
+# Define function to plot scatterplot with Michaelis-Menten curve
+scatter_mm <- function(ppi) {
+    
+    # Remove Ks values > 5
+    ppi <- ppi %>%
+        filter(ks <= 5)
+    
+    # Plot scatterplot with Michaelis-Menten curves
+    p <- ggplot(ppi %>% dplyr::rename(Mode = type), aes(x = ks, y = ka)) +
+        geom_point(aes(color = Mode)) +
+        theme_bw() +
+        labs(x = "", y = "") +
+        scale_color_manual(values = dup_palette) +
+        geom_smooth(
+            method = "nls", formula = y ~ Vmax * x / (Km + x), 
+            start = list(Vmax = 50, Km = 2),
+            se = FALSE, 
+            colour = "deepskyblue4", size = 2,
+            data = filter(ppi, type == "SSD")
+        ) +
+        geom_smooth(
+            method = "nls", formula = y ~ Vmax * x / (Km + x), 
+            start = list(Vmax = 50, Km = 2),
+            se = FALSE, 
+            colour = "goldenrod3", size = 2,
+            data = filter(ppi, type == "WGD")
+        )
+    
+    return(p)
+}
+
+plot_mm <- lapply(seq_along(ppi), function(x) {
+    
+    # Create character scalar of plot title
+    species <- names(ppi)[x]
+    title <- paste0(
+        substr(species, 1, 1), ". ",
+        substr(species, 2, nchar(species))
+    )
+    
+    # Plot scatterplot with Michaelis-Menten curve + species name in title
+    p <- scatter_mm(ppi[[species]]) +
+        labs(title = title) +
+        theme(legend.position = "none")
+    return(p)
+})
+names(plot_mm) <- names(ppi)
+
+# Combine plots
+## Get legend
+legend <- ggpubr::get_legend(scatter_mm(ppi$Gmax))
+
+# Get upper and lower plots
+p_mm_upper <- ggpubr::ggarrange(
+    plot_mm$Gmax, plot_mm$Athaliana, plot_mm$Ptrichocarpa, 
+    plot_mm$Slycopersicum, nrow = 1
+)
+p_mm_lower <- ggpubr::ggarrange(
+    plot_mm$Vvinifera, plot_mm$Osativa, plot_mm$Zmays, nrow = 1
+)
+
+## Combine upper and lower plots and add common legend
+p_mm_final <- ggarrange(p_mm_upper, p_mm_lower, nrow = 2,
+                        common.legend = TRUE, legend = "right",
+                        legend.grob = legend)
+p_mm_final <- annotate_figure(
+    p_mm_final,
+    top = text_grob(
+        "Evolution of sequence divergence for interacting WGD- and SSD-derived gene pairs",
+        size = 15
+    ),
+    left = text_grob("Sequence divergence", rot = 90),
+    bottom = "Ks"
+)
+p_mm_final
+```
+
+The figure shows that interacting WGD-derived gene pairs are more constrained
+to diverge in sequence than interacting SSD-derived gene pairs. This finding
+is in line with previous reports that demonstrate that WGD-derived genes
+encode proteins associated with intricate systems, such as components of signal
+transduction networks, transcriptional regulation, multi-subunit protein
+complexes.
+
+```{r save_plot_hypothesis3}
+# Save plot
+ggsave(
+    p_mm_final,
+    file = here("products", "plots", 
+                "sequence_divergence_for_interacting_dup_gene_pairs.png"),
+    dpi = 300, width = 15, height = 8
+)
+
+```
+
+# Session info {.unnumbered}
+
+This document was created under the following conditions:
+
+```{r sessioninfo, eval = TRUE}
+sessioninfo::session_info()
+```
