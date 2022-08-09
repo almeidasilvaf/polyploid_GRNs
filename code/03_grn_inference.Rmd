@@ -1,0 +1,317 @@
+---
+title: "Gene regulatory network inference"
+author: "Fabricio Almeida-Silva"
+date: "`r Sys.Date()`"
+output: BiocStyle::pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+    echo = TRUE,
+    warning = FALSE, 
+    message = FALSE,
+    eval = FALSE,
+    tidy.opts = list(width.cutoff = 60),
+    tidy = TRUE
+)
+```
+
+```{r load_packages, eval = TRUE}
+library(here)
+library(BioNERO)
+library(igraph)
+library(ggstatsplot)
+library(ggpubr)
+set.seed(123)
+dup_palette <- c("#1984c5", "#ffb400")
+```
+
+# Overview
+
+Here, we will describe the code to infer gene regulatory networks (GRN) for 
+each species from the RNA-seq data obtained from EBI's Expression Atlas.
+
+# GRN inference
+
+Here, we will define a function to process the input for GRN inference
+with `r BiocStyle::Biocpkg("BioNERO")` and infer a GRN for each species
+manually (not in a loop) to avoid errors in one data set leading to loss
+of all previously inferred GRNs.
+
+```{r grn_inference, message = TRUE}
+# Load expression data
+load(here("data", "expression_data.rda"))
+
+# Load TFs
+load(here("data", "tfs.rda"))
+
+# Define function to infer GRNs
+get_GRN <- function(species) {
+    
+    # Get expression matrix for species x
+    exp <- expression_data[[species]]
+    exp <- BioNERO::exp_preprocess(exp, Zk_filtering = FALSE)
+    exp <- as.data.frame(exp)
+    
+    # Get vector of TFs for species x
+    vtfs <- tfs[[species]]$Gene
+    vtfs <- vtfs[vtfs %in% rownames(exp)] # keep only TFs in expression matrix
+    vtfs <- unique(vtfs)
+    
+    if(length(vtfs) > 1) {
+      message(species, ": ", length(vtfs), " TFs")
+    } else {
+      stop("Found less than 2 TFs.")
+    }
+
+    # Infer GRN
+    grn <- BioNERO::grn_infer(
+        exp, method = "genie3", regulators = vtfs, nTrees = 1000
+    )
+    return(grn)
+}
+
+# Infer GRNs
+grn_osa <- get_GRN("Osativa")
+grn_zma <- get_GRN("Zmays")
+grn_gma <- get_GRN("Gmax")
+grn_sly <- get_GRN("Slycopersicum")
+grn_ptr <- get_GRN("Ptrichocarpa")
+grn_ath <- get_GRN("Athaliana")
+grn_vvi <- get_GRN("Vvinifera")
+```
+
+We now have our GRNs as fully connected graphs. Let's filter them
+by picking only the top *N* edges (based on edge rankings). To decide *N*
+for each species, we will break each GRN into 20 increasingly larger graphs
+and assess the scale-free topology fit for each graph. Then, we will pick 
+the maximum value of *N* that makes the graph fit a scale-free 
+topology ($R^2$ = 0.75).
+
+```{r filter_grns}
+# Filter network based on scale-free topology fit
+## Osativa
+png(
+  filename = here("products", "plots", "grn_filtering_osativa.png"),
+  width = 8, height = 6, units = "in",
+  res = 300
+)
+grn_filtered_osa <- grn_filter(grn_osa, nsplit = 20)
+dev.off()
+
+grn_filtered_osa <- grn_osa[1:1799884, ]
+
+
+## Zmays
+png(
+  filename = here("products", "plots", "grn_filtering_zmays.png"),
+  width = 8, height = 6, units = "in",
+  res = 300
+)
+grn_filtered_zma <- grn_filter(grn_zma, nsplit = 20)
+dev.off()
+
+grn_filtered_zma <- grn_zma[1:2045899, ]
+
+## Vvinifera
+png(
+  filename = here("products", "plots", "grn_filtering_vvinifera.png"),
+  width = 8, height = 6, units = "in",
+  res = 300
+)
+grn_filtered_vvi <- grn_filter(grn_vvi, nsplit = 20)
+dev.off()
+
+grn_filtered_vvi <- grn_vvi[1:1214095, ]
+
+## Gmax
+png(
+  filename = here("products", "plots", "grn_filtering_gmax.png"),
+  width = 8, height = 6, units = "in",
+  res = 300
+)
+grn_filtered_gma <- grn_filter(grn_gma, nsplit = 20)
+dev.off()
+
+grn_filtered_gma <- grn_gma[1:2268359, ]
+
+## Slycopersicum
+png(
+  filename = here("products", "plots", "grn_filtering_slycopersicum.png"),
+  width = 8, height = 6, units = "in",
+  res = 300
+)
+grn_filtered_sly <- grn_filter(grn_sly, nsplit = 20)
+dev.off()
+
+grn_filtered_sly <- grn_sly[1:1344344, ]
+
+
+## Ptrichocarpa
+png(
+  filename = here("products", "plots", "grn_filtering_ptrichocarpa.png"),
+  width = 8, height = 6, units = "in",
+  res = 300
+)
+grn_filtered_ptr <- grn_filter(grn_ptr, nsplit = 20)
+dev.off()
+
+grn_filtered_ptr <- grn_ptr[1:1275872, ]
+
+
+## Athaliana
+png(
+  filename = here("products", "plots", "grn_filtering_athaliana.png"),
+  width = 8, height = 6, units = "in",
+  res = 300
+)
+grn_filtered_ath <- grn_filter(grn_ath, nsplit = 20)
+dev.off()
+
+grn_filtered_ath <- grn_ath[1:2503623, ]
+
+# Save filtered GRNs to an .rda file
+grns <- list(
+  Osativa = grn_filtered_osa,
+  Zmays = grn_filtered_zma,
+  Vvinifera = grn_filtered_vvi,
+  Gmax = grn_filtered_gma,
+  Slycopersicum = grn_filtered_sly,
+  Ptrichocarpa = grn_filtered_ptr,
+  Athaliana = grn_filtered_ath
+)
+grns <- lapply(grns, function(x) return(x[, 1:2])) # remove 'Weight' column
+
+save(
+  grns,
+  file = here("products", "result_files", "grns.rda"),
+  compress = "xz"
+)
+```
+
+To summarize, the numbers of top *N* edges for each species were:
+
+```{r summary, eval = TRUE, echo = FALSE}
+# Create a data frame with top N edges for each species
+top_n_edges <- data.frame(
+  Species = c("Osativa", "Zmays", "Vvinifera", "Gmax", "Slycopersicum",
+              "Ptrichocarpa", "Athaliana"),
+  N = c(1799884, 2045899, 1214095, 2268359, 1344344,
+        1275872, 2503623) / 10^6
+)
+
+knitr::kable(top_n_edges, col.names = c("Species", "Edge number (Millions)"))
+```
+
+
+# Exploring degree distributions
+
+Finally, let's compare the degree distributions of WGD- and SSD-derived gene
+pairs.
+
+```{r degree_distros, eval = TRUE, fig.width = 22, fig.height=15}
+load(here("data", "duplicated_genes.rda"))
+load(here("products", "result_files", "grns.rda"))
+
+# Create data frame of degree distribution for each species by duplication mode
+degree_distros <- Reduce(rbind, lapply(seq_along(grns), function(x) {
+    species <- names(grns)[x]
+    net <- grns[[x]]
+    dups <- duplicated_genes[[species]]
+    
+    # Get degree distribution as a data frame
+    degree <- graph_from_data_frame(net[, 1:2]) %>% degree()
+    degree_df <- data.frame(
+        gene = names(degree),
+        degree = degree
+    ) %>% dplyr::inner_join(., dups, by = "gene") %>%
+        dplyr::select(gene, degree, type, peak) %>%
+        dplyr::mutate(species = species)
+    
+    return(degree_df)
+}))
+
+# Visualize degree distributions as a violin plot
+plot_violin <- function(data) {
+    p <- ggbetweenstats(
+        data = data, x = type, y = degree, 
+        type = "nonparametric", pairwise.display = "all", 
+        p.adjust.method = "BH"
+    ) +
+        ggplot2::scale_color_manual(values = dup_palette) +
+        labs(x = "", y = "") +
+        theme(plot.subtitle = element_text(size = 8.5))
+    return(p)
+}
+sdegree_distros <- split(degree_distros, degree_distros$species)
+
+plot_degree_gma <- plot_violin(sdegree_distros$Gmax) + 
+    labs(title = "Glycine max")
+
+plot_degree_ath <- plot_violin(sdegree_distros$Athaliana) + 
+    labs(title = "Arabidopsis thaliana")
+
+plot_degree_ptr <- plot_violin(sdegree_distros$Ptrichocarpa) + 
+    labs(title = "Populus trichocarpa")
+
+plot_degree_sly <- plot_violin(sdegree_distros$Slycopersicum) + 
+    labs(title = "Solanum lycopersicum")
+
+plot_degree_vvi <- plot_violin(sdegree_distros$Vvinifera) + 
+    labs(title = "Vitis vinifera")
+
+plot_degree_osa <- plot_violin(sdegree_distros$Osativa) + 
+    labs(title = "Oryza sativa")
+
+plot_degree_zma <- plot_violin(sdegree_distros$Zmays) + 
+    labs(title = "Zea mays")
+
+# Combine plots
+p_deg_upper <- ggarrange(
+    plot_degree_gma, plot_degree_ath, plot_degree_ptr, 
+    plot_degree_sly, nrow = 1
+)
+p_deg_lower <- ggarrange(
+    plot_degree_vvi, plot_degree_osa, plot_degree_zma, nrow = 1
+)
+p_deg_final <- ggarrange(p_deg_upper, p_deg_lower, nrow = 2)
+p_deg_final <- annotate_figure(
+    p_deg_final,
+    top = text_grob("Degree distribution of WGD- and SSD-derived genes",
+                    size = 15),
+    bottom = text_grob("Mode of duplication"),
+    left = text_grob("Node degree", rot = 90)
+)
+p_deg_final
+```
+
+As in the PPI network, although the P-values for some comparisons were
+significant, the effect size is negligible, indicating that degree does not
+influence motif frequencies. The small P-value is likely an artifact generated
+by the large sample size of the comparisons.
+
+```{r save_output}
+# Saving figure and degree distros object
+## Degree distros
+save(
+    degree_distros,
+    file = here("products", "result_files", "degree_distros_grn.rda"),
+    compress = "xz"
+)
+
+## Plot
+ggsave(
+    p_deg_final,
+    file = here("products", "plots", "grn_degree_distros.png"),
+    width = 22, height = 15, dpi = 300
+)
+```
+
+
+# Session info {.unnumbered}
+
+This document was created under the following conditions:
+
+```{r sessioninfo, eval = TRUE}
+sessioninfo::session_info()
+```
