@@ -4,3 +4,4 @@
 .Ruserdata
 data/*.Rmd
 code/*.log
+products/result_files/grns.rda

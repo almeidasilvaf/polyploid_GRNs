@@ -24,6 +24,7 @@ library(tidyverse)
 library(syntenet)
 
 set.seed(123) # for reproducibility
+dup_palette <- c("#1984c5", "#ffb400")
 ```
 
 # Overview
@@ -122,7 +123,7 @@ dup_stats_plot <- ggplot(dup_stats, aes(x = Mode, y = Frequency, fill = Mode)) +
     scale_y_continuous(labels = scales::label_number(suffix = "K", scale = 1e-3)) +
     theme_bw() +
     facet_wrap(~Species, scales = "free", nrow = 2) +
-    scale_fill_manual(values=c('#999999','#E69F00')) +
+    scale_fill_manual(values = dup_palette) +
     theme(legend.position = "none") +
     labs(
         title = "Number of duplicated gene pairs per mode in each species"
