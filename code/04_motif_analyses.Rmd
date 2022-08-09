@@ -1,0 +1,807 @@
+---
+title: "Motif analyses of GRN and PPI networks"
+author: "Fabricio Almeida-Silva"
+date: "`r Sys.Date()`"
+output: BiocStyle::pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+    echo = TRUE,
+    warning = FALSE, 
+    message = FALSE,
+    eval = FALSE,
+    tidy.opts = list(width.cutoff = 60),
+    tidy = TRUE
+)
+```
+
+```{r load_packages, eval = TRUE}
+library(here)
+library(magrene)
+library(BiocParallel)
+library(tidyverse)
+library(ComplexHeatmap)
+library(RColorBrewer)
+library(ggstatsplot)
+library(ggpubr)
+set.seed(123)
+dup_palette <- c(SSD = "#1984c5", WGD = "#ffb400")
+```
+
+# Overview
+
+Here, we will describe the code to:
+
+1. Calculate motif frequencies in the networks
+2. Compare observed frequencies to null distributions
+3. Evaluate interaction similarity between paralogous gene pairs.
+4. Perform a functional enrichment analysis on genes in motifs.
+
+# Calculating motif frequencies
+
+Here, we will calculate motif frequencies for each species, but we will
+do it separately for each Ks peak we identified previously.
+
+To start, let's load the required data.
+
+```{r load_data, eval = TRUE}
+# Load paralogs
+load(here("products", "result_files", "duplicate_pairs_with_boundaries.rda"))
+
+## Simplifying object name
+paralogs <- duplicate_pairs_with_boundaries
+rm(duplicate_pairs_with_boundaries)
+
+
+# Load GRN
+load(here("products", "result_files", "grns.rda"))
+
+
+# Load PPI network
+load(here("products", "result_files", "ppi.rda"))
+
+## Keep only edges from PPI network and remove all other columns
+ppi <- lapply(ppi, function(x) return(x[, 1:2]))
+```
+
+Now, let's get motifs for each species and peak.
+
+```{r get_motifs, message = TRUE}
+# Define function to count all motifs at once.
+count_all_motifs <- function(species = NULL, count = FALSE) {
+    
+    pairs <- paralogs[[species]][, c(1, 2, 4, 5)]
+    names(pairs) <- c("dup1", "dup2", "mode", "peak")
+    
+    # Split by peak
+    pairs_peak <- split(pairs, pairs$peak)
+    
+    # Count motifs for WGD and SSD-derived pairs
+    motifs <- lapply(pairs_peak, function(y) {
+        ssd <- y[y$mode == "SSD", 1:2]
+        wgd <- y[y$mode == "WGD", 1:2]
+        
+        ## PPI V
+        ssd_ppiv <- find_ppi_v(ppi[[species]], ssd, count_only = count)
+        wgd_ppiv <- find_ppi_v(ppi[[species]], wgd, count_only = count)
+        message("Finished identifying PPI V motifs.")
+
+        ## V
+        ssd_v <- find_v(grns[[species]], ssd, count_only = count)
+        wgd_v <- find_v(grns[[species]], wgd, count_only = count)
+        message("Finished identifying V motifs.")
+
+        ## Lambda
+        ssd_lambda <- find_lambda(grns[[species]], ssd, count_only = FALSE)
+        wgd_lambda <- find_lambda(grns[[species]], wgd, count_only = FALSE)
+        message("Finished identifying lambda motifs.")
+
+        ## Delta
+        ssd_delta <- find_delta(
+            edgelist_ppi = ppi[[species]], lambda_vec = ssd_lambda,
+            count_only = count
+        )
+        wgd_delta <- find_delta(
+            edgelist_ppi = ppi[[species]], lambda_vec = wgd_lambda,
+            count_only = count
+        )
+        message("Finished identifying delta motifs.")
+
+        ## Bifan
+        ssd_bifan <- find_bifan(
+            paralogs = ssd, lambda_vec = ssd_lambda, count_only = count
+        )
+        wgd_bifan <- find_bifan(
+            paralogs = wgd, lambda_vec = wgd_lambda, count_only = count
+        )
+        message("Finished identifying bifan motifs.")
+
+        ## Result list
+        res_ssd <- list(
+            V = ssd_v,
+            V_PPI = ssd_ppiv,
+            lambda = length(ssd_lambda),
+            delta = ssd_delta,
+            bifan = ssd_bifan
+        )
+        res_wgd <- list(
+            V = wgd_v,
+            V_PPI = wgd_ppiv,
+            lambda = length(wgd_lambda),
+            delta = wgd_delta,
+            bifan = wgd_bifan
+        )
+        res_list <- list(
+            SSD = res_ssd,
+            WGD = res_wgd
+        )
+        return(res_list)
+    })
+    names(motifs) <- paste0("peak", seq_along(pairs_peak))
+    return(motifs)
+}
+
+
+dir.create(here("products", "result_files", "motifs"))
+
+# Get motifs for each species separately
+motifs_gmax <- count_all_motifs("Gmax")
+save(
+    motifs_gmax,
+    file = here("products", "result_files", "motifs", "motifs_gmax.rda"),
+    compress = "xz"
+)
+
+motifs_athaliana <- count_all_motifs("Athaliana")
+save(
+    motifs_athaliana,
+    file = here("products", "result_files", "motifs", "motifs_athaliana.rda"),
+    compress = "xz"
+)
+
+motifs_ptrichocarpa <- count_all_motifs("Ptrichocarpa")
+save(
+    motifs_ptrichocarpa,
+    file = here("products", "result_files", "motifs", "motifs_ptrichocarpa.rda"),
+    compress = "xz"
+)
+
+motifs_slycopersicum <- count_all_motifs("Slycopersicum")
+save(
+    motifs_slycopersicum,
+    file = here("products", "result_files", "motifs", "motifs_slycopersicum.rda"),
+    compress = "xz"
+)
+
+motifs_vvinifera <- count_all_motifs("Vvinifera")
+save(
+    motifs_vvinifera,
+    file = here("products", "result_files", "motifs", "motifs_vvinifera.rda"),
+    compress = "xz"
+)
+
+motifs_osativa <- count_all_motifs("Osativa")
+save(
+    motifs_osativa,
+    file = here("products", "result_files", "motifs", "motifs_osativa.rda"),
+    compress = "xz"
+)
+
+motifs_zmays <- count_all_motifs("Zmays")
+save(
+    motifs_zmays,
+    file = here("products", "result_files", "motifs", "motifs_zmays.rda"),
+    compress = "xz"
+)
+```
+
+And finally, only motif counts, not character representations.
+
+```{r motif_count_only, message = TRUE}
+species <- names(grns)
+
+motif_counts <- lapply(species, function(x) {
+    message("Working on species ", x)
+    return(count_all_motifs(x, count = TRUE))
+})
+names(motif_counts) <- species
+
+# Save observed motif frequencies
+save(
+    motif_counts,
+    file = here("products", "result_files", "motifs", "motif_counts.rda"),
+    compress = "xz"
+)
+```
+
+# Evaluating significance of motif frequencies
+
+To evaluate the significance of the motif counts we observed,
+we will generate a null distribution by simulating 1000 degree-preserving
+simulated networks. Then, we calculate a Z-score for each motif,
+by species, and by Ks peaks.
+
+```{r get_nulls}
+# Define function to create null distribution for each species
+get_null_counts <- function(species, n = 1000, 
+                            bp_param = BiocParallel::SerialParam(RNGseed = 123)) {
+    
+    pairs <- paralogs[[species]][, c(1, 2, 4, 5)]
+    names(pairs) <- c("dup1", "dup2", "mode", "peak")
+    
+    # Split by peak
+    pairs_peak <- split(pairs, pairs$peak)
+    
+    motifs <- lapply(pairs_peak, function(y) {
+        ssd <- y[y$mode == "SSD", 1:2]
+        wgd <- y[y$mode == "WGD", 1:2]
+        
+        ssd_nulls <- generate_nulls(
+            grns[[species]], ssd, ppi[[species]], n = n, bp_param = bp_param
+        )
+        wgd_nulls <- generate_nulls(
+            grns[[species]], wgd, ppi[[species]], n = n, bp_param = bp_param
+        )
+        
+        ## Result list
+        res_list <- list(
+            SSD = ssd_nulls,
+            WGD = wgd_nulls
+        )
+        return(res_list)
+    })
+    names(motifs) <- paste0("peak", seq_along(pairs_peak))
+    return(motifs)
+}
+
+# Get null distros for each species
+bp <- BiocParallel::MulticoreParam(workers = 10, RNGseed = 123)
+
+nulls_vvinifera <- get_null_counts("Vvinifera", bp_param = bp)
+save(
+    nulls_vvinifera,
+    file = here("products", "result_files", "motifs", "nulls_vvinifera.rda"),
+    compress = "xz"
+)
+
+nulls_slycopersicum <- get_null_counts("Slycopersicum", bp_param = bp)
+save(
+    nulls_slycopersicum,
+    file = here("products", "result_files", "motifs", "nulls_slycopersicum.rda"),
+    compress = "xz"
+)
+
+nulls_osativa <- get_null_counts("Osativa", bp_param = bp)
+save(
+    nulls_osativa,
+    file = here("products", "result_files", "motifs", "nulls_osativa.rda"),
+    compress = "xz"
+)
+
+nulls_ptrichocarpa <- get_null_counts("Ptrichocarpa", bp_param = bp)
+save(
+    nulls_ptrichocarpa,
+    file = here("products", "result_files", "motifs", "nulls_ptrichocarpa.rda"),
+    compress = "xz"
+)
+
+nulls_athaliana <- get_null_counts("Athaliana", bp_param = bp)
+save(
+    nulls_athaliana,
+    file = here("products", "result_files", "motifs", "nulls_athaliana.rda"),
+    compress = "xz"
+)
+
+nulls_zmays <- get_null_counts("Zmays", bp_param = bp)
+save(
+    nulls_zmays,
+    file = here("products", "result_files", "motifs", "nulls_zmays.rda"),
+    compress = "xz"
+)
+
+nulls_gmax <- get_null_counts("Gmax", bp_param = bp)
+save(
+    nulls_gmax,
+    file = here("products", "result_files", "motifs", "nulls_gmax.rda"),
+    compress = "xz"
+)
+```
+
+Now that we have null distros for each species and peak, let's calculate 
+Z-scores for observed frequencies.
+
+```{r calculate_z, eval = TRUE}
+# Load observed frequencies
+load(
+    here("products", "result_files", "motifs", "motif_counts.rda")
+)
+observed <- motif_counts
+
+# Create list of nulls that match the structure of list of observed counts
+## Load null objects
+null_files <- list.files(
+    here("products", "result_files", "motifs"), pattern = "nulls*",
+    full.names = TRUE
+)
+for(file in null_files) {
+    load(file)
+}
+
+## Combine them all in a list, in the same order of `observed`
+names(observed)
+
+nulls <- list(
+    Osativa = nulls_osativa,
+    Zmays = nulls_zmays,
+    Vvinifera = nulls_vvinifera,
+    Gmax = nulls_gmax,
+    Slycopersicum = nulls_slycopersicum,
+    Ptrichocarpa = nulls_ptrichocarpa,
+    Athaliana = nulls_athaliana
+)
+
+# Calculate Z-scores for each species and summarize results in a data frame
+zscores_df <- Reduce(rbind, lapply(seq_along(observed), function(x) {
+    
+    fobs <- observed[[x]]
+    fnulls <- nulls[[x]]
+    species <- names(observed)[x]
+    message("Working on species ", species)
+    
+    z <- Reduce(rbind, lapply(seq_along(fobs), function(y) {
+        peak <- names(fobs)[y]
+        
+        # Fix name mismatch - 'V_PPI' in obs, 'PPI_V' in nulls
+        names(fobs[[y]]$WGD)[2] <- "PPI_V" 
+        names(fobs[[y]]$SSD)[2] <- "PPI_V" 
+        
+        wgd_z <- calculate_Z(fobs[[y]]$WGD, fnulls[[y]]$WGD)
+        ssd_z <- calculate_Z(fobs[[y]]$SSD, fnulls[[y]]$SSD)
+        
+        summary_df <- data.frame(
+            Motif = rep(names(wgd_z), 2),
+            Z = c(wgd_z, ssd_z),
+            Mode = c(rep("WGD", 5), rep("SSD", 5)),
+            Species = species,
+            Peak = peak
+        )
+        return(summary_df)
+    }))
+    return(z)
+}))
+
+# Reshape data from long to wide format
+z_metadata <- zscores_df %>%
+    mutate(species_peak = str_c(Species, Peak, sep = "_")) %>%
+    mutate(motif_mode = str_c(Motif, Mode, sep = "_")) 
+
+z_pdata <- z_metadata %>%
+    tidyr::pivot_wider(
+        names_from = species_peak, # cols
+        id_cols = motif_mode, # rows
+        values_from = Z
+    ) %>%
+    column_to_rownames(., var = "motif_mode") %>%
+    as.matrix()
+row_order <- c("PPI_V_WGD", "PPI_V_SSD", "V_WGD", "V_SSD",
+               "delta_WGD", "delta_SSD", "lambda_WGD", "lambda_SSD",
+               "bifan_WGD", "bifan_SSD")
+z_pdata <- z_pdata[row_order, ]
+```
+
+Now, let's plot the results as a heatmap. Here, we will consider significant
+Z-scores > |2| (absolute value). Z-scores below this threshold will be set 
+to NA.
+
+```{r plot_heatmap, eval = TRUE, fig.width = 10, fig.height = 5}
+# Set non-significant Z-scores to NA
+z_pdata[z_pdata < 2 & z_pdata > -2] <- NA
+z_pdata[is.nan(z_pdata)] <- NA
+
+# Create row annotation, column annotation, and annotation colors
+## Column annotation: species
+annotation_col <- data.frame(
+    row.names = colnames(z_pdata),
+    Species = gsub("_.*", "", colnames(z_pdata))
+)
+
+## Row annotation: duplication mode
+annotation_row <- data.frame(
+    row.names = rownames(z_pdata),
+    Duplication = gsub(".*_", "", rownames(z_pdata)),
+    Motif = c(
+        rep("PPI V", 2), rep("V", 2), rep("Delta", 2), rep("Lambda", 2),
+        rep("Bifan", 2)
+    )
+)
+
+## Annotation colors
+annotation_colors <- list(
+    Duplication = dup_palette,
+    Species = c(
+        Athaliana = "#374E55FF", Gmax = "#DF8F44FF", Osativa = "#00A1D5FF",
+        Ptrichocarpa = "#B24745FF", Slycopersicum = "#79AF97FF", 
+        Vvinifera = "#6A6599FF", Zmays = "#80796BFF"
+    ),
+    Motif = c(
+        Bifan = "#E64B35FF", Delta = "#4DBBD5FF", Lambda = "#00A087FF",
+        `PPI V` = "#3C5488FF", V = "#F39B7FFF"
+    )
+)
+
+p_heatmap <- ComplexHeatmap::pheatmap(
+    z_pdata, name = "Z-score",
+    main = "Z-scores of motif frequencies for each species",
+    cluster_rows = FALSE, cluster_cols = FALSE,
+    annotation_col = annotation_col,
+    annotation_row = annotation_row[, "Duplication", drop = FALSE],
+    labels_col = c(
+        "Peak 1", "Peak 2", # Osativa
+        "Peak 1", "Peak 2", "Peak 3", # Zmays
+        "Peak 1", # Vvinifera
+        "Peak 1", "Peak 2", # Gmax
+        "Peak 1", "Peak 2", # Slycopersicum
+        "Peak 1", "Peak 2", "Peak 3", # Ptrichocarpa
+        "Peak 1", "Peak 2"
+    ),
+    labels_row = c(
+        rep(c("WGD", "SSD"), 5)
+    ),
+    annotation_colors = annotation_colors,
+    col = colorRampPalette(c("#F1F8FA", "#0788B2"))(50),
+    column_split = annotation_col$Species,
+    row_split = annotation_row$Motif,
+    row_gap = unit(3, "mm"),
+    column_gap = unit(3, "mm"),
+    display_numbers = TRUE
+)
+p_heatmap
+```
+
+```{r save_heatmap}
+# Save plot
+pdf(
+    file = here("products", "plots", "heatmap_zscores_motif_frequencies.pdf"),
+    width = 10, height = 5
+)
+p_heatmap
+dev.off()
+```
+
+The figure shows some interesting patterns:
+
+- For all motifs, genes derived from recent whole-genome duplications form 
+more motifs than genes derived from more ancient whole-genome duplications.
+This suggests that motifs tend to be lost over time, probably due to
+fractionation.
+- Overall, species with recent whole-genome duplications have a higher 
+frequency of motifs than species with more ancient WGDs. This pattern is
+emphasized when comparing Z-scores for motif frequencies in 
+*Z. mays* and *O. sativa*. The rice genome
+has signatures of a WGD that happened in the common ancestor of all Poaceae 
+species, while the maize genome has undergone an additional round of WGD
+more recently (~25 MYA). The frequencies of all motif types is dramatically
+higher in maize as compared to rice, demonstrating the significance of
+recent whole-genome duplications to the rewiring of GRNs.
+
+
+# Calculating interaction similarity between paralogs
+
+Now, for each species and peak, we will compare the interaction similarity
+between duplicated targets and duplicated TFs derived from WGD and SSD. 
+Here, interaction similarity will be measured using the Sorensen-Dice
+similarity index, as implemented in `BiocStyle::Biocpkg("magrene")`.
+
+First, we will calculate interaction similarity for the PPI network.
+
+```{r interaction_similarity_ppi, eval = TRUE, fig.width=12, fig.height=10}
+species <- names(motif_counts)
+
+# Interaction similarity in PPI network
+ppi_sorensendice <- lapply(species, function(x) {
+    
+    message("Working on species ", x)
+    pairs <- paralogs[[x]][, c(1, 2, 4, 5)]
+    names(pairs) <- c("dup1", "dup2", "mode", "peak")
+    
+    pairs_by_peak <- split(pairs, pairs$peak)
+    int_by_peak <- Reduce(rbind, lapply(pairs_by_peak, function(y) {
+        wgd <- y[y$mode == "WGD", ]
+        ssd <- y[y$mode == "SSD", ]
+        
+        # Calculate interaction similarity
+        sim_wgd <- sd_similarity(ppi[[x]], wgd[, 1:2])
+        sim_wgd$mode <- "WGD"
+
+        sim_ssd <- sd_similarity(ppi[[x]], ssd[, 1:2])
+        sim_ssd$mode <- "SSD"
+        
+        sim <- rbind(sim_ssd, sim_wgd)
+        
+        # Add peak info
+        sim$peak <- wgd$peak[1]
+        return(sim)
+    }))
+    return(int_by_peak)
+})
+names(ppi_sorensendice) <- species
+
+# Define function to plot distribution of Sorensen-Dice scores with stats
+plot_sd <- function(sd_table = NULL) {
+    
+    # Get label with statistical results (test name, P, effect size, N)
+    statistics <- grouped_ggbetweenstats(
+        data = sd_table,
+        x = mode,
+        y = sorensen_dice,
+        grouping.var = peak,
+        type = "nonparametric",
+        p.adjust.method = "BH",
+        output = "subtitle"
+    )
+    statistics <- lapply(statistics, function(s) {
+        stat <- s
+        stat[[2]] <- NULL
+        stat[[4]] <- NULL
+        stat[[4]] <- NULL
+        return(stat)
+    })
+    # Add a column with peak ID and statistics to add in facet
+    sd_table$label <- factor(
+        sd_table$peak, 
+        levels = seq_along(unique(sd_table$peak)),
+        labels = statistics
+    )
+
+    p <- ggpubr::ggviolin(
+        data = sd_table, x = "mode", y = "sorensen_dice",
+        trim = TRUE, 
+        fill = "mode", palette = dup_palette,
+        add = "boxplot", add.params = list(fill = "white")
+    ) +
+        facet_wrap(
+            vars(label),
+            nrow = 1, labeller = ggplot2::label_parsed
+        ) +
+        labs(y = "", x = "") +
+        theme(legend.position = "none")
+    
+    return(p)
+}
+
+# Create plots for each species
+sd_ppi_gma <- plot_sd(ppi_sorensendice$Gmax) + ggtitle("G. max")
+sd_ppi_ath <- plot_sd(ppi_sorensendice$Ath) + ggtitle("A. thaliana")
+sd_ppi_ptr <- plot_sd(ppi_sorensendice$Ptrichocarpa) + ggtitle("P. trichocarpa")
+sd_ppi_vvi <- plot_sd(ppi_sorensendice$Vvinifera) + ggtitle("V. vinifera")
+sd_ppi_sly <- plot_sd(ppi_sorensendice$Slycopersicum) + ggtitle("S. lycopersicum")
+sd_ppi_osa <- plot_sd(ppi_sorensendice$Osativa) + ggtitle("O. sativa")
+sd_ppi_zma <- plot_sd(ppi_sorensendice$Zmays) + ggtitle("Z. mays")
+
+
+# Combine plots into one
+sd_ppi_allplots <- ggarrange(
+    ggarrange(sd_ppi_gma, sd_ppi_ath, nrow = 1),
+    ggarrange(sd_ppi_sly, sd_ppi_osa, nrow = 1),
+    ggarrange(sd_ppi_ptr, sd_ppi_vvi, nrow = 1, widths = c(3, 1.2)),
+    ggarrange(sd_ppi_zma, nrow = 1),
+    ncol = 1
+)
+sd_ppi_allplots_final <- annotate_figure(
+    sd_ppi_allplots,
+    top = text_grob("Interaction similarity for paralogous gene pairs in PPI networks",
+                    size = 15),
+    bottom = text_grob("Mode of duplication"),
+    left = text_grob("Sorensen-Dice similarity index", rot = 90)
+)
+sd_ppi_allplots_final 
+```
+
+```{r save_interaction_sim_ppi}
+# Saving plot
+ggsave(
+    sd_ppi_allplots_final,
+    file = here("products", "plots", "interaction_similarity_ppi.png"),
+    width = 14, height = 11, dpi = 300
+)
+```
+
+Overall, the genes WGD-derived gene pairs have a higher interaction similarity
+(i.e., they interact with the same targets) as compared to SSD-derived gene
+pairs. The difference is even more pronounced for older gene pairs, with
+gene pairs derived from ancient WGD displaying a much higher interaction 
+similarity than gene pairs derived from ancient SSD (e.g., *S. lycopersicum*,
+*O. sativa*, *P. trichocarpa*, and *Z. mays*). This pattern suggests that
+strong selection pressures constrain WGD-derived pairs to maintain their
+shared interactions, while relaxed selection pressures for SSD-derived 
+gene pairs allow them to diverge in interaction partners.
+
+Now, let's do the same for the GRN. The difference is that, for the GRN, we
+will calculate Sorensen-Dice similarity indices separately for duplicated
+TFs and duplicated targets.
+
+```{r interaction_similarity_grn, eval = TRUE, fig.width=12, fig.height=10}
+species <- names(motif_counts)
+
+# Interaction similarity in PPI network
+grn_sorensendice <- lapply(species, function(x) {
+    
+    message("Working on species ", x)
+    pairs <- paralogs[[x]][, c(1, 2, 4, 5)]
+    names(pairs) <- c("dup1", "dup2", "mode", "peak")
+    
+    pairs_by_peak <- split(pairs, pairs$peak)
+    int_by_peak <- Reduce(rbind, lapply(pairs_by_peak, function(y) {
+        wgd <- y[y$mode == "WGD", ]
+        ssd <- y[y$mode == "SSD", ]
+        
+        # Separate TF paralogs from target paralogs
+        tfs <- unique(grns[[x]]$Node1)
+        targets <- unique(grns[[x]]$Node2)
+        
+        ## WGD
+        wgd_tf <- wgd[wgd$dup1 %in% tfs & wgd$dup2 %in% tfs, 1:2]
+        wgd_target <- wgd[wgd$dup1 %in% targets & wgd$dup2 %in% targets, 1:2]
+        
+        ## SSD
+        ssd_tf <- ssd[ssd$dup1 %in% tfs & ssd$dup2 %in% tfs, 1:2]
+        ssd_target <- ssd[ssd$dup1 %in% targets & ssd$dup2 %in% targets, 1:2]
+        
+        # Calculate interaction similarity
+        ## WGD
+        sim_wgd_tf <- sd_similarity(grns[[x]], wgd_tf) %>%
+            dplyr::mutate(node = "TF", mode = "WGD")
+        sim_wgd_target <- sd_similarity(grns[[x]], wgd_target) %>%
+            dplyr::mutate(node = "target", mode = "WGD")
+        
+        ## SSD
+        sim_ssd_tf <- sd_similarity(grns[[x]], ssd_tf) %>%
+            dplyr::mutate(node = "TF", mode = "SSD")
+        sim_ssd_target <- sd_similarity(grns[[x]], ssd_target) %>%
+            dplyr::mutate(node = "target", mode = "SSD")
+        
+        # Combine data frames into one
+        sim <- rbind(sim_ssd_tf, sim_ssd_target, sim_wgd_tf, sim_wgd_target)
+        
+        # Add peak info
+        sim$peak <- wgd$peak[1]
+        return(sim)
+    }))
+    return(int_by_peak)
+})
+names(grn_sorensendice) <- species
+```
+
+```{r save_grn_sorensendice}
+# Save results in an object
+save(
+    grn_sorensendice,
+    file = here("products", "result_files", "grn_sorensendice.rda"),
+    compress = "xz"
+)
+```
+
+Let's visualize the distributions of Sorensen-Dice indices 
+for duplicated TFs.
+
+```{r plot_sd_grn_tf, eval = TRUE, fig.width=12, fig.height=10}
+load(here("products", "result_files", "grn_sorensendice.rda"))
+
+# Plot Sorensen-Dice indices for duplicated TFs
+sd_grn_gma_tf <- grn_sorensendice$Gmax %>% filter(node == "TF") %>%
+    plot_sd() + ggtitle("G. max")
+
+sd_grn_ath_tf <- grn_sorensendice$Athaliana %>% filter(node == "TF") %>%
+    plot_sd() + ggtitle("A. thaliana")
+
+sd_grn_ptr_tf <- grn_sorensendice$Ptrichocarpa %>% filter(node == "TF") %>%
+    plot_sd() + ggtitle("P. trichocarpa")
+
+sd_grn_vvi_tf <- grn_sorensendice$Vvinifera %>% filter(node == "TF") %>%
+    plot_sd() + ggtitle("V. vinifera")
+
+sd_grn_sly_tf <- grn_sorensendice$Slycopersicum %>% filter(node == "TF") %>%
+    plot_sd() + ggtitle("S. lycopersicum")
+
+sd_grn_osa_tf <- grn_sorensendice$Osativa %>% filter(node == "TF") %>%
+    plot_sd() + ggtitle("O. sativa")
+
+sd_grn_zma_tf <- grn_sorensendice$Zmays %>% filter(node == "TF") %>%
+    plot_sd() + ggtitle("Z. mays")
+
+## Combine plots into one
+sd_grn_tfs <- ggarrange(
+    ggarrange(sd_grn_gma_tf, sd_grn_ath_tf, nrow = 1),
+    ggarrange(sd_grn_sly_tf, sd_grn_osa_tf, nrow = 1),
+    ggarrange(sd_grn_ptr_tf, sd_grn_vvi_tf, nrow = 1, widths = c(3, 1.2)),
+    ggarrange(sd_grn_zma_tf, nrow = 1),
+    ncol = 1
+)
+sd_grns_tfs_final <- annotate_figure(
+    sd_grn_tfs,
+    top = text_grob("Interaction similarity for paralogous TFs in GRNs",
+                    size = 15),
+    bottom = text_grob("Mode of duplication"),
+    left = text_grob("Sorensen-Dice similarity index", rot = 90)
+)
+sd_grns_tfs_final
+```
+
+Overall, there is no difference in interaction similarity between
+TFs duplicated by WGD and SSD in the GRNs. Although there are significant
+differences for some comparisons (e.g., *G. max*, 2nd peak for *A. thaliana*,
+and 3rd peak for *Z. mays*), the effect sizes are small, so we can't conclude
+whether the differences are due to a biological signal or some kind of artifact.
+
+Now, let's explore if the pattern is the same for duplicated targets.
+
+```{r plot_sd_grn_target, eval = TRUE, fig.width=12, fig.height=10}
+load(here("products", "result_files", "grn_sorensendice.rda"))
+
+# Plot Sorensen-Dice indices for duplicated TFs
+sd_grn_gma_target <- grn_sorensendice$Gmax %>% filter(node == "target") %>%
+    plot_sd() + ggtitle("G. max")
+
+sd_grn_ath_target <- grn_sorensendice$Athaliana %>% filter(node == "target") %>%
+    plot_sd() + ggtitle("A. thaliana")
+
+sd_grn_ptr_target <- grn_sorensendice$Ptrichocarpa %>% filter(node == "target") %>%
+    plot_sd() + ggtitle("P. trichocarpa")
+
+sd_grn_vvi_target <- grn_sorensendice$Vvinifera %>% filter(node == "target") %>%
+    plot_sd() + ggtitle("V. vinifera")
+
+sd_grn_sly_target <- grn_sorensendice$Slycopersicum %>% filter(node == "target") %>%
+    plot_sd() + ggtitle("S. lycopersicum")
+
+sd_grn_osa_target <- grn_sorensendice$Osativa %>% filter(node == "target") %>%
+    plot_sd() + ggtitle("O. sativa")
+
+sd_grn_zma_target <- grn_sorensendice$Zmays %>% filter(node == "target") %>%
+    plot_sd() + ggtitle("Z. mays")
+
+## Combine plots into one
+sd_grn_targets <- ggarrange(
+    ggarrange(sd_grn_gma_target, sd_grn_ath_target, nrow = 1),
+    ggarrange(sd_grn_sly_target, sd_grn_osa_target, nrow = 1),
+    ggarrange(sd_grn_ptr_target, sd_grn_vvi_target, nrow = 1, widths = c(3, 1.2)),
+    ggarrange(sd_grn_zma_target, nrow = 1),
+    ncol = 1
+)
+sd_grns_targets_final <- annotate_figure(
+    sd_grn_targets,
+    top = text_grob("Interaction similarity for paralogous targets in GRNs",
+                    size = 15),
+    bottom = text_grob("Mode of duplication"),
+    left = text_grob("Sorensen-Dice similarity index", rot = 90)
+)
+sd_grns_targets_final
+```
+
+Indeed, for duplicated targets, we observe the same pattern. Although
+some differences are significant (P < 0.05), the effect sizes are small,
+so we cannot draw any conclusion from it.
+
+```{r save_sd_grns}
+# Saving the plots
+ggsave(
+    sd_grns_tfs_final,
+    file = here("products", "plots", "interaction_similarity_grn_tfs.png"),
+    width = 14, height = 11, dpi = 300
+)
+
+ggsave(
+    sd_grns_targets_final,
+    file = here("products", "plots", "interaction_similarity_grn_targets.png"),
+    width = 14, height = 11, dpi = 300
+)
+```
+
+# Session info {.unnumbered}
+
+This document was created under the following conditions:
+
+```{r sessioninfo, eval = TRUE}
+sessioninfo::session_info()
+```
