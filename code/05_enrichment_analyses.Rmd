@@ -1,0 +1,488 @@
+---
+title: "Enrichment analysis for genes in GRN motifs"
+author: "Fabricio Almeida-Silva"
+date: "`r Sys.Date()`"
+output: BiocStyle::pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+    echo = TRUE,
+    warning = FALSE, 
+    message = TRUE,
+    eval = FALSE,
+    tidy.opts = list(width.cutoff = 60),
+    tidy = TRUE
+)
+```
+
+
+```{r load_packages, eval = TRUE}
+library(here)
+library(magrene)
+library(tidyverse)
+library(BioNERO)
+library(ComplexHeatmap)
+set.seed(123)
+dup_palette <- c(SSD = "#1984c5", WGD = "#ffb400")
+```
+
+# Overview
+
+Here, we will describe the code to perform enrichment analyses to go deeper into
+the functions of genes in motifs. We will target motifs types differently:
+
+- V and bifan motifs: enrichment for TF families using all TFs in the GRN
+as background;
+- Lambda, delta, and bifan motifs: functional enrichment (GO and InterPro 
+terms) using all targets in the GRN as background.
+
+# Enrichment analysis
+
+Let's start by loading the required data.
+
+```{r functional_enrichment}
+# Load annotation
+load(here("data", "functional_annotation.rda"))
+
+# Load TFs
+load(here("data", "tfs.rda"))
+
+# Load GRN
+load(here("products", "result_files", "grns.rda"))
+
+## Create a list of TFs and targets for each GRN to use as background
+bg_tfs <- lapply(grns, function(x) { return(unique(x$Node1)) })
+bg_targets <- lapply(grns, function(x) { return(unique(x$Node2)) })
+rm(grns)
+
+# Load motifs
+species <- names(functional_annotation)
+files <- here(
+    "products", "result_files", "motifs", 
+    paste0("motifs_", tolower(species), ".rda")
+)
+for(s in files) {
+    load(s)
+}
+
+# Combine motifs for each species in a single object
+motifs <- list(
+    Athaliana = motifs_athaliana,
+    Gmax = motifs_gmax,
+    Ptrichocarpa = motifs_ptrichocarpa,
+    Slycopersicum = motifs_slycopersicum,
+    Vvinifera = motifs_vvinifera,
+    Osativa = motifs_osativa,
+    Zmays = motifs_zmays
+)
+
+rm(motifs_athaliana)
+rm(motifs_gmax)
+rm(motifs_ptrichocarpa)
+rm(motifs_slycopersicum)
+rm(motifs_vvinifera)
+rm(motifs_osativa)
+rm(motifs_zmays)
+```
+
+To make it easier, let's define wrapper functions around
+`BioNERO::enrichment_analysis()` that perform the enrichment analysis
+for each species and peak.
+
+```{r sea_functions}
+# Perform SEA and add columns with info on class, mode, motif, and peak
+enrichment <- function(genes, background, annot, 
+                       mode = NULL, motif = NULL, peak = NULL) {
+    
+    if(is(annot, "data.frame")) {
+        class <- names(annot)[2]
+        enrich <- BioNERO::enrichment_analysis(
+            genes, background, annot, column = class
+        )
+        if(!is.null(enrich)) {
+            enrich$Class <- class
+            enrich$Mode <- mode
+            enrich$Motif <- motif
+            if(!is.null(peak)) { enrich$Peak <- peak }
+        }
+        
+    } else {
+        classes <- c("GOBP", "GOMF", "InterPro")
+        enrich <- lapply(classes, function(x) {
+            annot_df <- annot[[x]]
+            col <- names(annot_df)[2]
+            res <- BioNERO::enrichment_analysis(
+                genes, background, annot_df, column = col
+            )
+            if(!is.null(res)) {
+                res$Class <- x
+                res$Mode <- mode
+                res$Motif <- motif
+                if(!is.null(peak)) { res$Peak <- peak }
+            }
+            return(res)
+        })
+        enrich <- Reduce(rbind, enrich)
+    }
+    return(enrich)
+}
+
+
+# Perform SEA for each species, by peak and mode
+sea <- function(motifs, annot_list, tf_list, bg_targets, bg_tfs, species) {
+    
+    # Iterate through each species
+    enrichment_res <- Reduce(rbind, lapply(species, function(x) {
+        message("Working on species ", x)
+        # Functional annotation and TFs
+        annot <- annot_list[[x]]
+        tf <- tf_list[[x]]
+        
+        # Background genes
+        background_targets <- bg_targets[[x]]
+        background_tfs <- bg_tfs[[x]]
+        
+        peaks <- names(motifs[[x]])
+        # Iterate through each peak
+        bypeak <- Reduce(rbind, lapply(peaks, function(y) {
+            message("Peak: ", y)
+            
+            events <- c("WGD", "SSD")
+            byevent <- Reduce(rbind, lapply(events, function(z) {
+                message("Mode: ", z)
+                # legend: x = species; y = peak; z = mode
+                motif_vec <- motifs[[x]][[y]][[z]]
+                
+                # V motifs
+                v_genes <- unique(gsub("->.*", "", gsub(".*<-", "", motif_vec$V)))
+                v_sea <- enrichment(v_genes, background_tfs, tf, z, "V", y)
+
+                # Bifan motifs - TF
+                bifan_tf <- gsub("->.*", "", motif_vec$bifan)
+                bifan_tf <- unique(unlist(strsplit(bifan_tf, ",")))
+                bifan_sea_tf <- NULL
+                if(length(bifan_tf) != 0) {
+                    bifan_sea_tf <- enrichment(
+                        bifan_tf, background_tfs, tf, z, "bifan", y
+                    )
+                }
+                
+                # Bifan motifs - target
+                bifan_genes <- gsub(".*->", "", motif_vec$bifan)
+                bifan_genes <- unique(unlist(strsplit(bifan_genes, ",")))
+                bifan_sea_tar <- NULL
+                if(length(bifan_genes) != 0) {
+                    bifan_sea_tar <- enrichment(
+                        bifan_genes, background_targets, annot, z, "bifan", y
+                    )
+                }
+                
+                # Lambda
+                lambda_genes <- gsub("<-.*->", ",", motif_vec$lambda)
+                lambda_genes <- unique(unlist(strsplit(lambda_genes, ",")))
+                lambda_sea <- NULL
+                if(length(lambda_genes) != 0) {
+                    lambda_sea <- enrichment(
+                        lambda_genes, background_targets, annot, z, "lambda", y
+                    )
+                }
+                
+                # Delta
+                delta_genes <- gsub("<-.*->", ",", motif_vec$delta)
+                delta_genes <- unique(unlist(strsplit(delta_genes, ",")))
+                delta_sea <- NULL
+                if(length(delta_genes) != 0) {
+                    delta_sea <- enrichment(
+                        delta_genes, background_targets, annot, z, "delta", y
+                    )
+                }
+            
+                # Combine results in a single data frame    
+                sea_final <- rbind(
+                    v_sea, bifan_sea_tf, bifan_sea_tar
+                )
+                return(sea_final)
+            }))
+            
+            return(byevent)
+        }))
+        if(!is.null(bypeak)) {
+            bypeak$Species <- x
+        }
+        return(bypeak)
+    }))
+    return(enrichment_res)
+}
+
+# Broader SEA, not filtered by peak
+sea_global <- function(motifs, annot_list, tf_list, bg_targets, bg_tfs, species) {
+    
+    # Iterate through each species
+    enrichment_res <- Reduce(rbind, lapply(species, function(x) {
+        message("Working on species ", x)
+        # Functional annotation and TFs
+        annot <- annot_list[[x]]
+        tf <- tf_list[[x]]
+        
+        # Background genes
+        background_targets <- bg_targets[[x]]
+        background_tfs <- bg_tfs[[x]]
+        
+        # Create a list of motifs by mode (WGD and SSD), combining peaks
+        peaks <- names(motifs[[x]])
+        genes_wgd <- unlist(lapply(peaks, function(y) {
+            motif_vec <- motifs[[x]][[y]]$WGD
+            return(motif_vec)
+        }), recursive = FALSE)
+        genes_wgd <- sapply(unique(names(genes_wgd)), function(x) { 
+            return(unname(unlist(genes_wgd[names(genes_wgd) == x])))
+        }, simplify=FALSE)
+        
+        genes_ssd <- unlist(lapply(peaks, function(y) {
+            motif_vec <- motifs[[x]][[y]]$SSD
+            return(motif_vec)
+        }), recursive = FALSE)
+        genes_ssd <- sapply(unique(names(genes_ssd)), function(x) { 
+            return(unname(unlist(genes_ssd[names(genes_ssd) == x])))
+        }, simplify=FALSE)
+        mlist <- list(WGD = genes_wgd, SSD = genes_ssd) 
+        
+        # Iterate through `mlist` and perform SEA by mode
+        events <- c("WGD", "SSD")
+        byevent <- Reduce(rbind, lapply(events, function(z) {
+            message("Mode: ", z)
+            motif_vec <- mlist[[z]]
+            
+            # V motifs
+            v_genes <- unique(gsub("->.*", "", gsub(".*<-", "", motif_vec$V)))
+            v_sea <- enrichment(v_genes, background_tfs, tf, z, "V", y)
+            
+            # Bifan motifs - TF
+            bifan_tf <- gsub("->.*", "", motif_vec$bifan)
+            bifan_tf <- unique(unlist(strsplit(bifan_tf, ",")))
+            bifan_sea_tf <- NULL
+            if(length(bifan_tf) != 0) {
+                bifan_sea_tf <- enrichment(
+                    bifan_tf, background_tfs, tf, z, "bifan", y
+                )
+            }
+            
+            # Bifan motifs - target
+            bifan_genes <- gsub(".*->", "", motif_vec$bifan)
+            bifan_genes <- unique(unlist(strsplit(bifan_genes, ",")))
+            bifan_sea_tar <- NULL
+            if(length(bifan_genes) != 0) {
+                bifan_sea_tar <- enrichment(
+                    bifan_genes, background_targets, annot, z, "bifan", y
+                )
+            }
+            
+            # Lambda
+            lambda_genes <- gsub("<-.*->", ",", motif_vec$lambda)
+            lambda_genes <- unique(unlist(strsplit(lambda_genes, ",")))
+            lambda_sea <- NULL
+            if(length(lambda_genes) != 0) {
+                lambda_sea <- enrichment(
+                    lambda_genes, background_targets, annot, z, "lambda", y
+                )
+            }
+            
+            # Delta
+            delta_genes <- gsub("<-.*->", ",", motif_vec$delta)
+            delta_genes <- unique(unlist(strsplit(delta_genes, ",")))
+            delta_sea <- NULL
+            if(length(delta_genes) != 0) {
+                delta_sea <- enrichment(
+                    delta_genes, background_targets, annot, z, "delta", y
+                )
+            }
+            
+            # Combine results in a single data frame    
+            sea_final <- rbind(
+                v_sea, bifan_sea_tf, bifan_sea_tar
+            )
+            return(sea_final)
+        }))
+        
+        return(byevent)
+    }))
+    
+    if(!is.null(enrichment_res)) {
+        enrichment_res$Species <- x
+    }
+    return(enrichment_res)
+}
+
+```
+
+Now, let's perform the SEA for each species.
+
+```{r sea_application}
+annot_list <- functional_annotation
+tf_list <- tfs
+
+# Performing SEA for each species
+sea_ath <- sea(motifs, annot_list, tf_list, bg_targets, bg_tfs, "Athaliana")
+sea_gma <- sea(motifs, annot_list, tf_list, bg_targets, bg_tfs, "Gmax")
+sea_ptr <- sea(motifs, annot_list, tf_list, bg_targets, bg_tfs, "Ptrichocarpa")
+sea_sly <- sea(motifs, annot_list, tf_list, bg_targets, bg_tfs, "Slycopersicum")
+sea_vvi <- sea(motifs, annot_list, tf_list, bg_targets, bg_tfs, "Vvinifera")
+sea_osa <- sea(motifs, annot_list, tf_list, bg_targets, bg_tfs, "Osativa")
+sea_zma <- sea(motifs, annot_list, tf_list, bg_targets, bg_tfs, "Zmays")
+
+sea_by_peak <- rbind(sea_ath, sea_gma, sea_sly, sea_vvi, sea_osa, sea_zma)
+sea_by_peak$GeneID <- NULL
+readr::write_tsv(
+    sea_by_peak, 
+    file = here("products", "tables", "motif_functional_enrichment_by_peak.tsv")
+)
+```
+
+To conclude, let's perform another SEA, but not by peak. Here, we will only
+perform the SEA for WGD- and SSD- derived gene pairs in motifs.
+
+```{r sea_broad}
+# Perform global SEA
+seag_ath <- sea_global(motifs, annot_list, tf_list, bg_targets, bg_tfs, "Athaliana")
+seag_gma <- sea_global(motifs, annot_list, tf_list, bg_targets, bg_tfs, "Gmax")
+seag_ptr <- sea_global(motifs, annot_list, tf_list, bg_targets, bg_tfs, "Ptrichocarpa")
+seag_sly <- sea_global(motifs, annot_list, tf_list, bg_targets, bg_tfs, "Slycopersicum")
+seag_vvi <- sea_global(motifs, annot_list, tf_list, bg_targets, bg_tfs, "Vvinifera")
+seag_osa <- sea_global(motifs, annot_list, tf_list, bg_targets, bg_tfs, "Osativa")
+seag_zma <- sea_global(motifs, annot_list, tf_list, bg_targets, bg_tfs, "Zmays")
+
+# Combine results into a single data frame
+sea_combined <- rbind(
+    seag_ath %>% mutate(Species = "Athaliana"), 
+    seag_gma %>% mutate(Species = "Gmax"), 
+    seag_sly %>% mutate(Species = "Slycopersicum"), 
+    seag_vvi %>% mutate(Species = "Vvinifera"), 
+    seag_osa %>% mutate(Species = "Osativa"), 
+    seag_zma %>% mutate(Species = "Zmays"),
+    seag_ptr %>% mutate(Species = "Ptrichocarpa")
+)
+sea_combined$GeneID <- NULL
+sea_combined$Peak <- NULL
+readr::write_tsv(
+    sea_combined, 
+    file = here("products", "tables", "motif_functional_enrichment_by_mode.tsv")
+)
+```
+
+After manual inspection of the enrichment results, I created the table
+*summarized_functional_enrichment_of_motifs.csv*, which contains summarized
+enrichment results for visual exploration. One important thing to observe
+is that the only class of motifs with enriched functions/TF families was
+bifans.
+
+To conclude, let's visualize enrichment results as a presence/absence heatmap.
+
+```{r visualize_enrichment, eval = TRUE, fig.width=10, fig.height=12}
+# Load data
+sum_enrich <- readr::read_csv(
+    here("products", "tables", "summarized_functional_enrichment_of_motifs.csv"),
+    show_col_types = FALSE
+)
+
+# Turn long data frame to gene/absence matrix
+pav <- sum_enrich %>%
+    mutate(present = 1) %>%
+    mutate(cols = str_c(Species, "_", Mode)) %>%
+    select(Class, present, cols) %>%
+    pivot_wider(names_from = cols, values_from = present) %>%
+    column_to_rownames("Class") %>%
+    as.matrix()
+pav[is.na(pav)] <- 0
+
+# Create row annotation, column annotation, and annotation colors
+## Column annotation: species, mode
+annotation_col <- data.frame(
+    row.names = colnames(pav),
+    Mode = gsub(".*_", "", colnames(pav)),
+    Species = gsub("_.*", "", colnames(pav))
+)
+
+## Row annotation: gene type (TF or target)
+c <- sum_enrich %>%
+    dplyr::select(Class, Motif) %>%
+    distinct() %>%
+    as.data.frame()
+
+annotation_row <- data.frame(
+    row.names = c$Class,
+    Gene = c$Motif
+)
+annotation_row$Gene <- gsub("Targets", "Target", annotation_row$Gene)
+
+## Annotation colors
+annotation_colors <- list(
+    Mode = dup_palette,
+    Species = c(
+        Athaliana = "#374E55FF", Gmax = "#DF8F44FF", Osativa = "#00A1D5FF",
+        Ptrichocarpa = "#B24745FF", Slycopersicum = "#79AF97FF", 
+        Vvinifera = "#6A6599FF", Zmays = "#80796BFF"
+    ),
+    Gene = c(TF = "slateblue3", Target = "palegreen3")
+)
+
+# Plot heatmap
+p_heatmap <- ComplexHeatmap::pheatmap(
+    pav, name = "Presence/absence",
+    main = "Enriched functions and TF families for genes in bifans",
+    cluster_rows = FALSE, cluster_cols = FALSE,
+    annotation_col = annotation_col,
+    annotation_row = annotation_row,
+    labels_col = rep("", ncol(pav)),
+    annotation_colors = annotation_colors,
+    column_split = annotation_col$Species,
+    row_split = annotation_row$Gene,
+    row_gap = unit(3, "mm"),
+    column_gap = unit(3, "mm"),
+    color = c("grey90", "forestgreen"), border_color = "white",
+    legend = FALSE
+)
+p_heatmap
+```
+
+By looking at the figure, we can see some patterns:
+
+- SSD-derived genes in bifans are enriched in stress-related genes. These
+include genes involved in response to oxidative stress, response to hypoxia,
+and different classes of pathogenesis-related proteins, such as chitinases
+and lysozymes, peroxidases, and thaumatins. There are also 
+leucine-rich repeat receptor kinases, TIR domains, and wall-associated kinases.
+
+- Overall, only SSD-derived genes were enriched in particular TF families. 
+Although WGD-derived tend to be retained more often than SSD-derived genes, 
+WGD-derived genes in bifans were not enriched in any specific TF family.
+
+- SSD-derived genes are enriched in stress-related transcription factor 
+families, such as NAC, G2-like, bHLH, WRKY, and ERF. This is in line
+with previous observations that stress-related TFs tend to be duplicated
+by tandem duplications. This mechanism is likely adaptive, as genes in tandem
+tend to be co-regulated. Then, keeping stress-related genes in tandem arrays
+would ensure that they are coordinately activated.
+
+- WGD-derived genes in bifans are enriched in processes such as translation,
+flower development, transcriptional regulation, histone modifications,
+photosynthesis-related processes (e.g., chlorophyll biosynthesis, thylakoid membrane organization, RuBisCO, and photosystem I formation), cell cycle
+regulation, and carbohydrate and lipid metabolism.
+
+```{r save_heatmap}
+# Save heatmap as PDF
+pdf(
+    file = here("products", "plots", "heatmap_motif_functional_enrichment.pdf"),
+    width = 10, height = 12
+)
+p_heatmap
+dev.off()
+```
+
+# Session info {.unnumbered}
+
+This document was created under the following conditions:
+
+```{r sessioninfo, eval = TRUE}
+sessioninfo::session_info()
+```
