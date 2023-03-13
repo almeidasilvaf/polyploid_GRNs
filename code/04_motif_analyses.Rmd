@@ -459,17 +459,62 @@ p_heatmap <- ComplexHeatmap::pheatmap(
 p_heatmap
 ```
 
+Now, let's explore differences in motif counts for WGD- and SSD-derived gene 
+pairs, ignoring peaks. For that, we will get the mean of all peaks.
+
+```{r summary_wgd_ssd_motifs, fig.width=12, fig.height=6, eval = TRUE}
+# Get mean of all peaks for each species
+zscores_df$Z[is.nan(zscores_df$Z)] <- 0
+mean_z <- zscores_df %>%
+    group_by(Species, Mode, Motif) %>%
+    summarise(average_Z = round(mean(Z), 2)) %>%
+    mutate(Motif = str_replace_all(
+        Motif, 
+        c("bifan" = "Bifan",
+          "delta" = "Delta",
+          "lambda" = "Lambda",
+          "PPI_V" = "PPI V")
+    ))
+
+library(ggpubr)
+mean_z_plot <- ggbarplot(
+    mean_z, x = "Motif", y = "average_Z",
+    fill = "Mode", color = "black", palette = dup_palette,
+    label = TRUE, position = position_dodge(0.9),
+    facet.by = "Species", ncol = 7,
+    lab.vjust = 0.5, lab.hjust = -0.2
+) +
+    coord_flip() +
+    labs(
+        title = "Mean Z-score of motif frequencies for WGD- and SSD-derived gene pairs",
+        y = "Mean Z-score", x = ""
+    ) +
+    ylim(c(0, 700))
+mean_z_plot
+```
+
 ```{r save_heatmap}
-# Save plot
+# Save plots
 pdf(
     file = here("products", "plots", "heatmap_zscores_motif_frequencies.pdf"),
     width = 10, height = 5
 )
 p_heatmap
 dev.off()
+
+ggsave(
+    mean_z_plot,
+    filename = here("products", "plots", "barplot_zscores_motif_frequencies.png"),
+    dpi = 300, width = 18, height = 6
+)
+ggsave(
+    mean_z_plot,
+    filename = here("products", "plots", "barplot_zscores_motif_frequencies.pdf"),
+    width = 18, height = 6
+)
 ```
 
-The figure shows some interesting patterns:
+The figures shows some interesting patterns:
 
 - For all motifs, genes derived from recent whole-genome duplications form 
 more motifs than genes derived from more ancient whole-genome duplications.
@@ -484,6 +529,9 @@ species, while the maize genome has undergone an additional round of WGD
 more recently (~25 MYA). The frequencies of all motif types is dramatically
 higher in maize as compared to rice, demonstrating the significance of
 recent whole-genome duplications to the rewiring of GRNs.
+- WGD-derived gene pairs have a greater contribution to motif formation in
+species with recent WGD events. When WGD events are more ancient, SSD has
+a greater contribution to the formation of motifs.
 
 
 # Calculating interaction similarity between paralogs

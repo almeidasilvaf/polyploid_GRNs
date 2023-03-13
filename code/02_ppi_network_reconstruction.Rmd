@@ -10,9 +10,7 @@ knitr::opts_chunk$set(
     echo = TRUE,
     warning = FALSE, 
     message = FALSE,
-    eval = FALSE,
-    tidy.opts = list(width.cutoff = 60),
-    tidy = TRUE
+    eval = FALSE
 )
 ```
 
@@ -66,9 +64,10 @@ id_map <- c(
     Slycopersicum = 4081
 )
 
-# Define function to create PPI network of paralogs from STRINGdb for a species
-stringdb2paralogsppi <- function(species_id, threshold = 500, 
-                                 id_map, duplicate_pairs, annotation) {
+# Define function to create PPI network from STRINGdb for a species
+stringdb2ppi <- function(species_id, threshold = 500, 
+                                 id_map, duplicate_pairs, annotation,
+                                 duplicates_only = TRUE) {
     
     # Get PPI and alias URLs based on species ID
     url_ppi <- paste0(
@@ -92,10 +91,13 @@ stringdb2paralogsppi <- function(species_id, threshold = 500,
     names(fppi)[1:2] <- c("dup1", "dup2")
     
     # Keep only edges containing duplicated gene pairs
-    pairs <- duplicate_pairs[[species]]
-    pairs$pvalue <- NULL
-    pairs_ppi <- merge(pairs, fppi, by = c("dup1", "dup2")) # 1 and 2
-    
+    pairs_ppi <- fppi
+    if(duplicates_only) {
+        pairs <- duplicate_pairs[[species]]
+        pairs$pvalue <- NULL
+        pairs_ppi <- merge(pairs, fppi, by = c("dup1", "dup2")) # 1 and 2
+    }
+
     # Remove genes that are not present in annotation
     gene_list <- unique(annotation[[species]]$gene_id)
     pairs_ppi <- pairs_ppi[pairs_ppi$dup1 %in% gene_list, ]
@@ -105,9 +107,9 @@ stringdb2paralogsppi <- function(species_id, threshold = 500,
     return(pairs_ppi)
 }
 
-# Get PPI network for paralogous gene pairs
+# Get PPI network, paralogous gene pairs only
 ppi <- lapply(id_map, function(x) {
-    paralogs_ppi <- stringdb2paralogsppi(
+    paralogs_ppi <- stringdb2ppi(
         x, 
         id_map = id_map, 
         duplicate_pairs = duplicate_pairs,
@@ -116,10 +118,29 @@ ppi <- lapply(id_map, function(x) {
     return(paralogs_ppi)
 })
 
+# Get PPI network, including non paralogs
+ppi_full <- lapply(id_map, function(x) {
+    paralogs_ppi <- stringdb2ppi(
+        x, 
+        id_map = id_map, 
+        duplicate_pairs = duplicate_pairs,
+        annotation = annotation,
+        duplicates_only = FALSE
+    )
+    return(paralogs_ppi)
+})
+
+
 # Save PPI networks
 save(
     ppi,
     file = here("products", "result_files", "ppi.rda"),
+    compress = "xz"
+)
+
+save(
+    ppi_full,
+    file = here("products", "result_files", "ppi_full.rda"),
     compress = "xz"
 )
 ```
@@ -293,16 +314,17 @@ association between the two variables.
 ```{r hypothesis1, eval = TRUE}
 # Load required data
 load(here("data", "duplicated_genes.rda"))
-load(here("products", "result_files", "ppi.rda"))
+load(here("products", "result_files", "ppi_full.rda"))
+load(here("data", "annotation.rda"))
 
 # Define function to perform Fisher's exact tests for each species
-fisher_dup_interaction <- function(duplicated_genes, ppi) {
+fisher_dup_interaction <- function(duplicated_genes, ppi, annotation) {
     
     species_list <- names(duplicated_genes)
     test <- Reduce(rbind, lapply(species_list, function(x) {
         
         # Define background: all duplicated genes
-        bg <- duplicated_genes[[x]]$gene
+        bg <- annotation[[x]]$gene_id
         
         # Define genes to test and duplication mode 'annotation'
         genes_that_interact <- unique(c(ppi[[x]]$dup1, ppi[[x]]$dup2))
@@ -326,13 +348,13 @@ fisher_dup_interaction <- function(duplicated_genes, ppi) {
 
 # Perform test
 dup_ppi_association <- fisher_dup_interaction(
-    duplicated_genes, ppi
+    duplicated_genes, ppi_full, annotation
 )
 dup_ppi_association
 ```
 
-As we can see, the PPI network of *Glycine max*, *P. trichocarpa* and *Z. mays*
-is enriched in WGD-derived genes. That means that WGD-derived genes
+As we can see, the PPI network of all species are enriched in WGD-derived genes. 
+That means that WGD-derived genes
 in these species tend to interact more than the expected by chance in a
 scenario where the null hypothesis is true.
 
