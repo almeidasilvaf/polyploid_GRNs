@@ -2,7 +2,7 @@
 title: "Identification and classification of duplicated genes"
 author: "Fabricio Almeida-Silva"
 date: "`r Sys.Date()`"
-output: BiocStyle::pdf_document
+output: pdf_document
 ---
 
 ```{r setup, include=FALSE}
@@ -10,9 +10,7 @@ knitr::opts_chunk$set(
     echo = TRUE,
     warning = FALSE, 
     message = FALSE,
-    eval = FALSE,
-    tidy.opts = list(width.cutoff = 60),
-    tidy = TRUE
+    eval = FALSE
 )
 ```
 
@@ -22,6 +20,7 @@ source(here("code", "utils.R"))
 library(doubletrouble)
 library(tidyverse)
 library(syntenet)
+library(patchwork)
 
 set.seed(123) # for reproducibility
 dup_palette <- c("#1984c5", "#ffb400")
@@ -41,7 +40,7 @@ Here, we will describe the code to:
 
 # Identication and classification of duplicate gene pairs
 
-Here, we will identify duplicate pairs and classify them with 
+Here, we will identify duplicate pairs and classify them with
 `r BiocStyle::Biocpkg("doubletrouble")`. We will use a binary
 classification scheme, so duplicate pairs will be classified as either
 **WGD-derived** or **SSD-derived**.
@@ -81,9 +80,11 @@ anchors <- get_anchors_list(
     blast_list = blast_intra,
     annotation = pdata$annotation
 )
-save(anchors,
-     file = here("products", "result_files", "anchor_pairs_all_species.rda"),
-     compress = "xz")
+save(
+    anchors,
+    file = here("products", "result_files", "anchor_pairs_all_species.rda"),
+    compress = "xz"
+)
 
 #----Classify duplicate pairs---------------------------------------------------
 class_duplicate_pairs <- classify_gene_pairs(
@@ -91,15 +92,16 @@ class_duplicate_pairs <- classify_gene_pairs(
     annotation = pdata$annotation,
     binary = TRUE
 )
-save(class_duplicate_pairs,
-     file = here("products", "result_files", "classified_dup_pairs.rda"),
-     compress = "xz")
+save(
+    class_duplicate_pairs,
+    file = here("products", "result_files", "classified_dup_pairs.rda"),
+    compress = "xz"
+)
 ```
 
 Now, let's explore some descriptive statistics per species.
 
-```{r dup_pairs_stats, eval = TRUE, fig.width = 10, fig.height = 6}
-library(tidyverse)
+```{r dup_pairs_stats, eval = TRUE, fig.width = 8, fig.height = 4}
 load(here("products", "result_files", "classified_dup_pairs.rda"))
 
 # Count frequency of WGD and SSD-derived pairs per species
@@ -118,28 +120,28 @@ dup_stats %>%
     knitr::kable()
 
 # Visualize results as a barplot
-dup_stats_plot <- ggplot(dup_stats, aes(x = Mode, y = Frequency, fill = Mode)) +
+dup_stats_plot <- ggplot(
+    dup_stats, aes(
+        y = Frequency, x = Mode, fill = Mode
+    )
+) +
     geom_bar(stat = "identity", color = "black") +
-    scale_y_continuous(labels = scales::label_number(suffix = "K", scale = 1e-3)) +
+    geom_text(aes(label = Frequency), vjust = -0.5) +
+    scale_y_continuous(
+        labels = scales::label_number(suffix = "K", scale = 1e-3),
+        limits = c(0, 90000)
+    ) +
     theme_bw() +
-    facet_wrap(~Species, scales = "free", nrow = 2) +
+    facet_wrap(~Species, nrow = 1) +
     scale_fill_manual(values = dup_palette) +
     theme(legend.position = "none") +
     labs(
         title = "Number of duplicated gene pairs per mode in each species"
     )
-    
+
 dup_stats_plot
 ```
 
-```{r}
-# Save plot
-ggsave(
-    dup_stats_plot,
-    file = here("products", "plots", "duplicates_stats.png"),
-    dpi = 300, width = 10, height = 6
-)
-```
 
 # Calculating Ka, Ks, and Ka/Ks for gene pairs
 
@@ -332,72 +334,77 @@ kslist <- lapply(duplicate_pairs, function(x) {
 
 # Find peaks and plot them
 ## Gmax
-gmax_peaks <- find_ks_peaks(
-    kslist$Gmax$ks[kslist$Gmax$ks <= 1], npeaks = 2
-)
+gmax_peaks <- find_ks_peaks(kslist$Gmax$ks, npeaks = 2, max_ks = 1)
+gmax_peaks$ks <- kslist$Gmax$ks[kslist$Gmax$ks <= 2]
 
-ksplot_gmax <- plot_ks_peaks(
-    kslist$Gmax$ks[kslist$Gmax$ks <= 2], gmax_peaks
-) + ggplot2::ggtitle("G. max")
-
+ksplot_gmax <- plot_ks_peaks(gmax_peaks) +
+    labs(title = "G. max")
+    
 ## Slycopersicum
 slycopersicum_peaks <- find_ks_peaks(
-    kslist$Slycopersicum$ks, npeaks = 2
+    kslist$Slycopersicum$ks, npeaks = 2, max_ks = 5
 )
 
 ksplot_slycopersicum <- plot_ks_peaks(
-    kslist$Slycopersicum$ks, slycopersicum_peaks
-) + ggplot2::ggtitle("S. lycopersicum")
+    slycopersicum_peaks
+) +
+    labs(title = "S. lycopersicum")
 
 
 ## Osativa
 osativa_peaks <- find_ks_peaks(
-    kslist$Osativa$ks, npeaks = 2
+    kslist$Osativa$ks, npeaks = 2, max_ks = 5
 )
 
 ksplot_osativa <- plot_ks_peaks(
-    kslist$Osativa$ks, osativa_peaks
-) + ggplot2::ggtitle("O. sativa")
+    osativa_peaks
+) + 
+    labs(title = "O. sativa")
 
 
 ## Zmays
 zmays_peaks <- find_ks_peaks(
-    kslist$Zmays$ks, npeaks = 3
+    kslist$Zmays$ks, npeaks = 3, max_ks = 5
 )
 
 ksplot_zmays <- plot_ks_peaks(
-    kslist$Zmays$ks, zmays_peaks
-) + ggplot2::ggtitle("Z. mays")
+    zmays_peaks
+) + 
+    labs(title = "Z. mays")
 
 
 ## Athaliana
 athaliana_peaks <- find_ks_peaks(
-    kslist$Athaliana$ks, npeaks = 2
+    kslist$Athaliana$ks, npeaks = 2, max_ks = 5
 )
 
 ksplot_athaliana <- plot_ks_peaks(
-    kslist$Athaliana$ks, athaliana_peaks
-) + ggplot2::ggtitle("A. thaliana")
+    athaliana_peaks
+) + 
+    labs(title = "A. thaliana")
 
 ## Ptrichocarpa
 ptrichocarpa_peaks <- find_ks_peaks(
-    kslist$Ptrichocarpa$ks, npeaks = 3
+    kslist$Ptrichocarpa$ks, npeaks = 3, max_ks = 5
 )
 
 ksplot_ptrichocarpa <- plot_ks_peaks(
-    kslist$Ptrichocarpa$ks, ptrichocarpa_peaks
-) + ggplot2::ggtitle("P. trichocarpa")
+    ptrichocarpa_peaks
+) + 
+    labs(title = "P. trichocarpa")
 
 ## Vvinifera - manually done because k = 1
 vvinifera_peaks <- list(
     mean = 1.5,
     sd = 0.4,
-    lambda = 0.28
+    lambda = 0.28,
+    ks = kslist$Vvinifera$ks[kslist$Vvinifera$ks <= 3]
 )
 
 ksplot_vvinifera <- plot_ks_peaks(
-    kslist$Vvinifera$ks[kslist$Vvinifera$ks <= 3], vvinifera_peaks
-) + ggplot2::ggtitle("V. vinifera")
+    vvinifera_peaks
+) + 
+    labs(title = "V. vinifera")
 
 
 # Combining all plots into one
@@ -410,14 +417,13 @@ ks_plots2 <- patchwork::wrap_plots(
     nrow = 1
 )
 
-ks_plots <- ggpubr::ggarrange(
+ks_plots <- wrap_plots(
     ks_plots1, ks_plots2, nrow = 2
-)
-ks_plots <- ggpubr::annotate_figure(
-    ks_plots, 
-    top = ggpubr::text_grob("Ks distribution for species' paranomes", size = 15)
-)
-ks_plots
+) +
+    plot_annotation(
+        "Ks distribution for species' paranomes",
+        theme = theme(plot.title = element_text(hjust = 0.5))
+    )
 ```
 
 ```{r saving_plots}
@@ -436,13 +442,6 @@ save(
     file = here("products", "result_files", "ks_peaks.rda"),
     compress = "xz"
 )
-
-# Save plots
-ggplot2::ggsave(
-    ks_plots,
-    filename = here("products", "plots", "Ks_plots.png"),
-    dpi = 300, width = 16, height = 8
-)
 ```
 
 Now, let's split pairs by peak to which they belong.
@@ -454,8 +453,9 @@ osativa_spairs <- split_pairs_by_peak(
 )
 
 # Gmax
+gmax_peaks$ks <- kslist$Gmax$ks[kslist$Gmax$ks <= 2]
 gmax_spairs <- split_pairs_by_peak(
-    kslist$Gmax[kslist$Gmax$ks <= 2, c("dup1", "dup2", "ks", "type")], 
+    kslist$Gmax[, c("dup1", "dup2", "ks", "type")], 
     gmax_peaks
 )
 
@@ -471,20 +471,8 @@ zmays_spairs <- split_pairs_by_peak(
 )
 
 # Vvinifera - done manually, only 1 peak
-vvinifera_spairs <- list(
-    pairs = kslist$Vvinifera[, c("dup1", "dup2", "ks", "type")] %>%
-        filter(ks >= vvinifera_peaks$mean - 2 * vvinifera_peaks$sd &
-                   ks <= vvinifera_peaks$mean + 2 * vvinifera_peaks$sd) %>%
-        mutate(peak = 1),
-    plot = plot_ks_peaks(
-        kslist$Vvinifera$ks[kslist$Vvinifera$ks <= 3], vvinifera_peaks
-    ) + 
-        geom_vline(xintercept = vvinifera_peaks$mean - 2 * vvinifera_peaks$sd,
-                   color = "brown2", linetype = "dashed") +
-        geom_vline(xintercept = vvinifera_peaks$mean + 2 * vvinifera_peaks$sd,
-                   color = "brown2", linetype = "dashed") +
-        ggtitle("Ks distribution for V. vinifera paranome")
-    
+vvinifera_spairs <- split_pairs_by_peak(
+    kslist$Vvinifera[, c("dup1", "dup2", "ks", "type")], vvinifera_peaks
 )
 
 # Ptrichocarpa
@@ -512,27 +500,22 @@ ks_plots_with_boundaries2 <- patchwork::wrap_plots(
     nrow = 1
 )
 
-ks_plots_with_boundaries <- ggpubr::ggarrange(
-    ks_plots_with_boundaries1, 
-    ks_plots_with_boundaries2,
+ks_plots_with_boundaries <- wrap_plots(
+    ks_plots_with_boundaries1, ks_plots_with_boundaries2,
     nrow = 2
-)
-ks_plots_with_boundaries <- ggpubr::annotate_figure(
-    ks_plots_with_boundaries,
-    top = ggpubr::text_grob(
+) +
+    plot_annotation(
         "Ks distribution for species' paranomes with peak boundaries",
-        size = 16
+        theme = theme(plot.title = element_text(hjust = 0.5, size = 16))
     )
-)
-ks_plots_with_boundaries
 ```
 
 ```{r}
 # Save plots
-ggsave(
+save(
     ks_plots_with_boundaries,
-    file = here("products", "plots", "ks_plots_with_boundaries.png"),
-    dpi = 300, width = 16, height = 8
+    file = here("products", "plots", "ks_plots_with_boundaries.rda"),
+    compress = "xz"
 )
 
 # Save objects
@@ -597,7 +580,7 @@ save(
 )
 ```
 
-# Session info
+# Session information
 
 This document was created under the following conditions:
 

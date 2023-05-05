@@ -2,7 +2,7 @@
 title: "PPI network reconstruction and analysis"
 author: "Fabricio Almeida-Silva"
 date: "`r Sys.Date()`"
-output: BiocStyle::pdf_document
+output: pdf_document
 ---
 
 ```{r setup, include=FALSE}
@@ -21,6 +21,8 @@ library(igraph)
 library(BioNERO)
 library(ggpubr)
 library(ggstatsplot)
+library(patchwork)
+
 set.seed(123)
 dup_palette <- c("#1984c5", "#ffb400")
 ```
@@ -199,7 +201,7 @@ readr::write_tsv(
 
 Now, let's compare if SSD- and WGD-derived pairs differ in terms of degree.
 
-```{r wgd_ssd_degree_comparison, eval = TRUE, fig.width = 22, fig.height=15}
+```{r wgd_ssd_degree_comparison, eval = TRUE, fig.width = 10, fig.height=7}
 load(here("data", "duplicated_genes.rda"))
 load(here("products", "result_files", "ppi.rda"))
 
@@ -231,47 +233,55 @@ plot_violin <- function(data) {
         ggplot2::scale_color_manual(values = dup_palette) +
         labs(x = "", y = "") +
         theme(plot.subtitle = element_text(size = 8.5))
+    
+    subtitle <- extract_subtitle(p)
+    subtitle[c(2, 5, 6)] <- NULL
+    p <- p + labs(subtitle = subtitle)
+    
     return(p)
 }
 sdegree_distros <- split(degree_distros, degree_distros$species)
 
 plot_degree_gma <- plot_violin(sdegree_distros$Gmax) + 
-    labs(title = "Glycine max")
+    labs(title = "Glycine max") +
+    theme(plot.subtitle = element_text(size = 11))
 
 plot_degree_ath <- plot_violin(sdegree_distros$Athaliana) + 
-    labs(title = "Arabidopsis thaliana")
+    labs(title = "Arabidopsis thaliana") +
+    theme(plot.subtitle = element_text(size = 11))
 
 plot_degree_ptr <- plot_violin(sdegree_distros$Ptrichocarpa) + 
-    labs(title = "Populus trichocarpa")
+    labs(title = "Populus trichocarpa") +
+    theme(plot.subtitle = element_text(size = 11))
 
 plot_degree_sly <- plot_violin(sdegree_distros$Slycopersicum) + 
-    labs(title = "Solanum lycopersicum")
+    labs(title = "Solanum lycopersicum") +
+    theme(plot.subtitle = element_text(size = 11))
 
 plot_degree_vvi <- plot_violin(sdegree_distros$Vvinifera) + 
-    labs(title = "Vitis vinifera")
+    labs(title = "Vitis vinifera") +
+    theme(plot.subtitle = element_text(size = 11))
 
 plot_degree_osa <- plot_violin(sdegree_distros$Osativa) + 
-    labs(title = "Oryza sativa")
+    labs(title = "Oryza sativa") +
+    theme(plot.subtitle = element_text(size = 11))
 
 plot_degree_zma <- plot_violin(sdegree_distros$Zmays) + 
-    labs(title = "Zea mays")
+    labs(title = "Zea mays") +
+    theme(plot.subtitle = element_text(size = 11))
 
 # Combine plots
-p_deg_upper <- ggarrange(
-    plot_degree_gma, plot_degree_ath, plot_degree_ptr, 
-    plot_degree_sly, nrow = 1
-)
-p_deg_lower <- ggarrange(
-    plot_degree_vvi, plot_degree_osa, plot_degree_zma, nrow = 1
-)
-p_deg_final <- ggarrange(p_deg_upper, p_deg_lower, nrow = 2)
-p_deg_final <- annotate_figure(
-    p_deg_final,
-    top = text_grob("Degree distribution of WGD- and SSD-derived genes",
-                    size = 15),
-    bottom = text_grob("Mode of duplication"),
-    left = text_grob("Node degree", rot = 90)
-)
+p_deg_final <- wrap_plots(
+    wrap_plots(plot_degree_gma, plot_degree_ath, nrow = 1),
+    wrap_plots(plot_degree_osa, plot_degree_zma, nrow = 1),
+    wrap_plots(plot_degree_ptr, plot_degree_sly, plot_degree_vvi, nrow = 1),
+    nrow = 3
+) +
+    plot_annotation(
+        "Degree distribution of WGD- and SSD-derived genes",
+        theme = theme(plot.title = element_text(hjust = 0.5))
+    )
+
 p_deg_final
 ```
 
@@ -295,10 +305,11 @@ save(
 )
 
 ## Plot
-ggsave(
-    p_deg_final,
-    file = here("products", "plots", "ppi_network_degree_distros.png"),
-    width = 22, height = 15, dpi = 300
+p_degree_distros_ppi_network <- p_deg_final
+save(
+    p_degree_distros_ppi_network,
+    file = here::here("products", "plots", "p_degree_distros_ppi_network.rda"),
+    compress = "xz"
 )
 ```
 
@@ -363,8 +374,10 @@ scenario where the null hypothesis is true.
 # Save the results to a table
 write_tsv(
     dup_ppi_association,
-    file = here("products", "tables", 
-                "fisher_test_association_between_duplication_type_and_ppi.tsv")
+    file = here(
+        "products", "tables", 
+        "fisher_test_association_between_duplication_type_and_ppi.tsv"
+    )
 )
 ```
 
@@ -446,13 +459,17 @@ ssd_ppi_enrichment <- dup_ppi_sea(
 # Save enrichment analysis for duplicated genes that interact
 readr::write_tsv(
     wgd_ppi_enrichment,
-    file = here::here("products", "tables",
-                      "functional_enrichment_wgd_genes_that_interact.tsv")
+    file = here::here(
+        "products", "tables",
+        "functional_enrichment_wgd_genes_that_interact.tsv"
+    )
 )
 readr::write_tsv(
     ssd_ppi_enrichment,
-    file = here::here("products", "tables",
-                      "functional_enrichment_ssd_genes_that_interact.tsv")
+    file = here::here(
+        "products", "tables",
+        "functional_enrichment_ssd_genes_that_interact.tsv"
+    )
 )
 
 ```
@@ -465,19 +482,25 @@ signal transduction, glucose oxidation, proteolysis, amino acid oxidation,
 cutin biosynthesis, cell wall biogenesis, redox homeostasis,
 nucleic acid metabolism, mRNA processing, translation, 
 transcriptional regulation.
+
 - *A. thaliana*: cell cycle, photosynthesis, signal transduction,
 glucose oxidation, mRNA processing, vesicle trafficking, proteolysis,
 amino acid oxidation, redox homeostasis, translation, lipid metabolism,
 transcriptional regulation.
+
 - *P. trichocarpa*: lipid metabolism, glucose oxidation, signal transduction,
 amino acid oxidation, photosynthesis, nitrate assimilation, 
 cell wall biogenesis, redox homeostasis, translation, 
 transcriptional regulation.
+
 - *S. lycopersicum*: photosynthesis, glucose oxidation, lipid metabolism,
 signal transduction
+
 - *V. vinifera*: signal transduction, lipid metabolism, glucose oxidation,
 redox homeostasis
+
 - *O. sativa*: cell cycle, signal transduction, translation.
+
 - *Z. mays*: photosynthesis, glucose oxidation, cell wall biogenesis, 
 translation, signal transduction, redox homeostasis, 
 transcriptional regulation.
@@ -490,7 +513,7 @@ for WGD- and SSD-derived genes. Ka will be used as a proxy for
 sequence divergence, and Ks will be used to represent time. We will
 fit Michaelis-Menten curves to the scatterplot.
 
-```{r hypothesis3, eval = TRUE, fig.width = 15, fig.height=8}
+```{r hypothesis3, eval = TRUE, fig.width = 10, fig.height=6}
 load(here("products", "result_files", "ppi.rda"))
 
 # Define function to plot scatterplot with Michaelis-Menten curve
@@ -502,7 +525,7 @@ scatter_mm <- function(ppi) {
     
     # Plot scatterplot with Michaelis-Menten curves
     p <- ggplot(ppi %>% dplyr::rename(Mode = type), aes(x = ks, y = ka)) +
-        geom_point(aes(color = Mode)) +
+        geom_point(aes(color = Mode), alpha = 0.5) +
         theme_bw() +
         labs(x = "", y = "") +
         scale_color_manual(values = dup_palette) +
@@ -555,9 +578,13 @@ p_mm_lower <- ggpubr::ggarrange(
 )
 
 ## Combine upper and lower plots and add common legend
-p_mm_final <- ggarrange(p_mm_upper, p_mm_lower, nrow = 2,
-                        common.legend = TRUE, legend = "right",
-                        legend.grob = legend)
+p_mm_final <- ggarrange(
+    p_mm_upper, p_mm_lower,
+    nrow = 2,
+    common.legend = TRUE,
+    legend = "right", legend.grob = legend
+)
+
 p_mm_final <- annotate_figure(
     p_mm_final,
     top = text_grob(
@@ -567,6 +594,7 @@ p_mm_final <- annotate_figure(
     left = text_grob("Sequence divergence", rot = 90),
     bottom = "Ks"
 )
+
 p_mm_final
 ```
 
@@ -579,13 +607,15 @@ complexes.
 
 ```{r save_plot_hypothesis3}
 # Save plot
-ggsave(
-    p_mm_final,
-    file = here("products", "plots", 
-                "sequence_divergence_for_interacting_dup_gene_pairs.png"),
-    dpi = 300, width = 15, height = 8
+p_sequence_divergence_duplicates <- p_mm_final
+save(
+    p_sequence_divergence_duplicates,
+    file = here(
+        "products", "plots", 
+        "p_sequence_divergence_duplicates.rda"
+    ),
+    compress = "xz"
 )
-
 ```
 
 # Session info {.unnumbered}

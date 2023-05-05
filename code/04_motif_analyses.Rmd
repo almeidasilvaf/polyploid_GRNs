@@ -2,7 +2,7 @@
 title: "Motif analyses of GRN and PPI networks"
 author: "Fabricio Almeida-Silva"
 date: "`r Sys.Date()`"
-output: BiocStyle::pdf_document
+output: pdf_document
 ---
 
 ```{r setup, include=FALSE}
@@ -10,9 +10,7 @@ knitr::opts_chunk$set(
     echo = TRUE,
     warning = FALSE, 
     message = FALSE,
-    eval = FALSE,
-    tidy.opts = list(width.cutoff = 60),
-    tidy = TRUE
+    eval = FALSE
 )
 ```
 
@@ -25,6 +23,7 @@ library(ComplexHeatmap)
 library(RColorBrewer)
 library(ggstatsplot)
 library(ggpubr)
+
 set.seed(123)
 dup_palette <- c(SSD = "#1984c5", WGD = "#ffb400")
 ```
@@ -67,7 +66,7 @@ ppi <- lapply(ppi, function(x) return(x[, 1:2]))
 
 Now, let's get motifs for each species and peak.
 
-```{r get_motifs, message = TRUE}
+```{r get_motifs}
 # Define function to count all motifs at once.
 count_all_motifs <- function(species = NULL, count = FALSE) {
     
@@ -198,7 +197,7 @@ save(
 
 And finally, only motif counts, not character representations.
 
-```{r motif_count_only, message = TRUE}
+```{r motif_count_only}
 species <- names(grns)
 
 motif_counts <- lapply(species, function(x) {
@@ -489,28 +488,26 @@ mean_z_plot <- ggbarplot(
         title = "Mean Z-score of motif frequencies for WGD- and SSD-derived gene pairs",
         y = "Mean Z-score", x = ""
     ) +
-    ylim(c(0, 700))
+    scale_y_continuous(limits = c(0, 600), breaks = seq(0, 600, 300))
+
 mean_z_plot
 ```
 
 ```{r save_heatmap}
 # Save plots
-pdf(
-    file = here("products", "plots", "heatmap_zscores_motif_frequencies.pdf"),
-    width = 10, height = 5
+p_heatmap_z_scores <- p_heatmap
+save(
+    p_heatmap_z_scores,
+    file = here("products", "plots", "p_heatmap_z_scores.rda"),
+    compress = "xz"
 )
-p_heatmap
-dev.off()
 
-ggsave(
-    mean_z_plot,
-    filename = here("products", "plots", "barplot_zscores_motif_frequencies.png"),
-    dpi = 300, width = 18, height = 6
-)
-ggsave(
-    mean_z_plot,
-    filename = here("products", "plots", "barplot_zscores_motif_frequencies.pdf"),
-    width = 18, height = 6
+
+p_mean_z_scores <- mean_z_plot
+save(
+    p_mean_z_scores,
+    file = here("products", "plots", "p_mean_z_scores.rda"),
+    compress = "xz"
 )
 ```
 
@@ -520,6 +517,7 @@ The figures shows some interesting patterns:
 more motifs than genes derived from more ancient whole-genome duplications.
 This suggests that motifs tend to be lost over time, probably due to
 fractionation.
+
 - Overall, species with recent whole-genome duplications have a higher 
 frequency of motifs than species with more ancient WGDs. This pattern is
 emphasized when comparing Z-scores for motif frequencies in 
@@ -529,6 +527,7 @@ species, while the maize genome has undergone an additional round of WGD
 more recently (~25 MYA). The frequencies of all motif types is dramatically
 higher in maize as compared to rice, demonstrating the significance of
 recent whole-genome duplications to the rewiring of GRNs.
+
 - WGD-derived gene pairs have a greater contribution to motif formation in
 species with recent WGD events. When WGD events are more ancient, SSD has
 a greater contribution to the formation of motifs.
@@ -543,7 +542,7 @@ similarity index, as implemented in `BiocStyle::Biocpkg("magrene")`.
 
 First, we will calculate interaction similarity for the PPI network.
 
-```{r interaction_similarity_ppi, eval = TRUE, fig.width=12, fig.height=10}
+```{r interaction_similarity_ppi, eval = TRUE, fig.width=10, fig.height=9}
 species <- names(motif_counts)
 
 # Interaction similarity in PPI network
@@ -579,22 +578,37 @@ names(ppi_sorensendice) <- species
 plot_sd <- function(sd_table = NULL) {
     
     # Get label with statistical results (test name, P, effect size, N)
-    statistics <- grouped_ggbetweenstats(
+    p_statistics <- grouped_ggbetweenstats(
         data = sd_table,
         x = mode,
         y = sorensen_dice,
         grouping.var = peak,
         type = "nonparametric",
-        p.adjust.method = "BH",
-        output = "subtitle"
+        p.adjust.method = "BH"
     )
-    statistics <- lapply(statistics, function(s) {
-        stat <- s
-        stat[[2]] <- NULL
-        stat[[4]] <- NULL
-        stat[[4]] <- NULL
-        return(stat)
+    statistics <- lapply(seq_along(unique(sd_table$peak)), function(x) {
+        stats_df <- extract_stats(p_statistics[[x]])
+        
+        pval <- signif(stats_df$subtitle_data$p.value, 2)
+        if(pval < 0.0099) { 
+            pval <- formatC(
+                pval, format = "e", digits = 1
+            )
+        }
+        effsize <- signif(stats_df$subtitle_data$estimate, 2)
+        n <- stats_df$subtitle_data$n.obs
+        
+        stats <- glue::glue(
+            "list(
+                italic(p) == '{pval}',
+                widehat(italic('r')) == '{effsize}',
+                italic(n) == {n}
+            )"
+        )
+        
+        return(stats)
     })
+    
     # Add a column with peak ID and statistics to add in facet
     sd_table$label <- factor(
         sd_table$peak, 
@@ -630,12 +644,22 @@ sd_ppi_zma <- plot_sd(ppi_sorensendice$Zmays) + ggtitle("Z. mays")
 
 # Combine plots into one
 sd_ppi_allplots <- ggarrange(
-    ggarrange(sd_ppi_gma, sd_ppi_ath, nrow = 1),
-    ggarrange(sd_ppi_sly, sd_ppi_osa, nrow = 1),
-    ggarrange(sd_ppi_ptr, sd_ppi_vvi, nrow = 1, widths = c(3, 1.2)),
-    ggarrange(sd_ppi_zma, nrow = 1),
+    ggarrange(
+        sd_ppi_gma, sd_ppi_ath + theme(axis.text.y = element_blank()), 
+        nrow = 1
+    ),
+    ggarrange(
+        sd_ppi_sly, sd_ppi_osa + theme(axis.text.y = element_blank()), 
+        nrow = 1
+    ),
+    ggarrange(
+        sd_ppi_ptr, sd_ppi_vvi + theme(axis.text.y = element_blank()), 
+        nrow = 1, widths = c(3, 1.2)
+    ),
+    sd_ppi_zma,
     ncol = 1
-)
+) 
+
 sd_ppi_allplots_final <- annotate_figure(
     sd_ppi_allplots,
     top = text_grob("Interaction similarity for paralogous gene pairs in PPI networks",
@@ -643,15 +667,18 @@ sd_ppi_allplots_final <- annotate_figure(
     bottom = text_grob("Mode of duplication"),
     left = text_grob("Sorensen-Dice similarity index", rot = 90)
 )
-sd_ppi_allplots_final 
+
+sd_ppi_allplots_final
 ```
 
 ```{r save_interaction_sim_ppi}
 # Saving plot
-ggsave(
-    sd_ppi_allplots_final,
-    file = here("products", "plots", "interaction_similarity_ppi.png"),
-    width = 14, height = 11, dpi = 300
+p_sorensendice_ppi <- sd_ppi_allplots_final
+
+save(
+    p_sorensendice_ppi,
+    file = here("products", "plots", "p_sorensendice_ppi.rda"),
+    compress = "xz"
 )
 ```
 
@@ -669,7 +696,7 @@ Now, let's do the same for the GRN. The difference is that, for the GRN, we
 will calculate Sorensen-Dice similarity indices separately for duplicated
 TFs and duplicated targets.
 
-```{r interaction_similarity_grn, eval = TRUE, fig.width=12, fig.height=10}
+```{r interaction_similarity_grn}
 species <- names(motif_counts)
 
 # Interaction similarity in PPI network
@@ -733,7 +760,7 @@ save(
 Let's visualize the distributions of Sorensen-Dice indices 
 for duplicated TFs.
 
-```{r plot_sd_grn_tf, eval = TRUE, fig.width=12, fig.height=10}
+```{r plot_sd_grn_tf, eval = TRUE, fig.width=10, fig.height=9}
 load(here("products", "result_files", "grn_sorensendice.rda"))
 
 # Plot Sorensen-Dice indices for duplicated TFs
@@ -760,9 +787,18 @@ sd_grn_zma_tf <- grn_sorensendice$Zmays %>% filter(node == "TF") %>%
 
 ## Combine plots into one
 sd_grn_tfs <- ggarrange(
-    ggarrange(sd_grn_gma_tf, sd_grn_ath_tf, nrow = 1),
-    ggarrange(sd_grn_sly_tf, sd_grn_osa_tf, nrow = 1),
-    ggarrange(sd_grn_ptr_tf, sd_grn_vvi_tf, nrow = 1, widths = c(3, 1.2)),
+    ggarrange(
+        sd_grn_gma_tf, sd_grn_ath_tf + theme(axis.text.y = element_blank()), 
+        nrow = 1
+    ),
+    ggarrange(
+        sd_grn_sly_tf, sd_grn_osa_tf + theme(axis.text.y = element_blank()), 
+        nrow = 1
+    ),
+    ggarrange(
+        sd_grn_ptr_tf, sd_grn_vvi_tf + theme(axis.text.y = element_blank()), 
+        nrow = 1, widths = c(3, 1.2)
+    ),
     ggarrange(sd_grn_zma_tf, nrow = 1),
     ncol = 1
 )
@@ -773,6 +809,7 @@ sd_grns_tfs_final <- annotate_figure(
     bottom = text_grob("Mode of duplication"),
     left = text_grob("Sorensen-Dice similarity index", rot = 90)
 )
+
 sd_grns_tfs_final
 ```
 
@@ -784,7 +821,7 @@ whether the differences are due to a biological signal or some kind of artifact.
 
 Now, let's explore if the pattern is the same for duplicated targets.
 
-```{r plot_sd_grn_target, eval = TRUE, fig.width=12, fig.height=10}
+```{r plot_sd_grn_target, eval = TRUE, fig.width=11, fig.height=10}
 load(here("products", "result_files", "grn_sorensendice.rda"))
 
 # Plot Sorensen-Dice indices for duplicated TFs
@@ -811,12 +848,22 @@ sd_grn_zma_target <- grn_sorensendice$Zmays %>% filter(node == "target") %>%
 
 ## Combine plots into one
 sd_grn_targets <- ggarrange(
-    ggarrange(sd_grn_gma_target, sd_grn_ath_target, nrow = 1),
-    ggarrange(sd_grn_sly_target, sd_grn_osa_target, nrow = 1),
-    ggarrange(sd_grn_ptr_target, sd_grn_vvi_target, nrow = 1, widths = c(3, 1.2)),
+    ggarrange(
+        sd_grn_gma_target, sd_grn_ath_target + theme(axis.text.y = element_blank()), 
+        nrow = 1
+    ),
+    ggarrange(
+        sd_grn_sly_target, sd_grn_osa_target + theme(axis.text.y = element_blank()), 
+        nrow = 1
+    ),
+    ggarrange(
+        sd_grn_ptr_target, sd_grn_vvi_target + theme(axis.text.y = element_blank()), 
+        nrow = 1, widths = c(3, 1.2)
+    ),
     ggarrange(sd_grn_zma_target, nrow = 1),
     ncol = 1
 )
+
 sd_grns_targets_final <- annotate_figure(
     sd_grn_targets,
     top = text_grob("Interaction similarity for paralogous targets in GRNs",
@@ -824,6 +871,7 @@ sd_grns_targets_final <- annotate_figure(
     bottom = text_grob("Mode of duplication"),
     left = text_grob("Sorensen-Dice similarity index", rot = 90)
 )
+
 sd_grns_targets_final
 ```
 
@@ -833,16 +881,18 @@ so we cannot draw any conclusion from it.
 
 ```{r save_sd_grns}
 # Saving the plots
-ggsave(
-    sd_grns_tfs_final,
-    file = here("products", "plots", "interaction_similarity_grn_tfs.png"),
-    width = 14, height = 11, dpi = 300
+p_sorensendice_grn_tfs <- sd_grns_tfs_final
+save(
+    p_sorensendice_grn_tfs, 
+    file = here("products", "plots", "p_sorensendice_grn_tfs.rda"),
+    compress = "xz"
 )
 
-ggsave(
-    sd_grns_targets_final,
-    file = here("products", "plots", "interaction_similarity_grn_targets.png"),
-    width = 14, height = 11, dpi = 300
+p_sorensendice_grn_targets <- sd_grns_targets_final
+save(
+    p_sorensendice_grn_targets, 
+    file = here("products", "plots", "p_sorensendice_grn_targets.rda"),
+    compress = "xz"
 )
 ```
 

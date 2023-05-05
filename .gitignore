@@ -5,3 +5,5 @@
 data/*.Rmd
 code/*.log
 products/result_files/grns.rda
+products/figs/*.svg
+products/figs/*.pdf

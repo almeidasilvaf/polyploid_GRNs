@@ -2,7 +2,7 @@
 title: "Enrichment analysis for genes in GRN motifs"
 author: "Fabricio Almeida-Silva"
 date: "`r Sys.Date()`"
-output: BiocStyle::pdf_document
+output: pdf_document
 ---
 
 ```{r setup, include=FALSE}
@@ -10,9 +10,7 @@ knitr::opts_chunk$set(
     echo = TRUE,
     warning = FALSE, 
     message = TRUE,
-    eval = FALSE,
-    tidy.opts = list(width.cutoff = 60),
-    tidy = TRUE
+    eval = FALSE
 )
 ```
 
@@ -23,6 +21,8 @@ library(magrene)
 library(tidyverse)
 library(BioNERO)
 library(ComplexHeatmap)
+library(patchwork)
+
 set.seed(123)
 dup_palette <- c(SSD = "#1984c5", WGD = "#ffb400")
 ```
@@ -471,12 +471,12 @@ regulation, and carbohydrate and lipid metabolism.
 
 ```{r save_heatmap}
 # Save heatmap as PDF
-pdf(
-    file = here("products", "plots", "heatmap_motif_functional_enrichment.pdf"),
-    width = 10, height = 12
+p_heatmap_functional_enrichment <- p_heatmap
+save(
+    p_heatmap_functional_enrichment, 
+    file = here("products", "plots", "p_heatmap_functional_enrichment.rda"),
+    compress = "xz"
 )
-p_heatmap
-dev.off()
 ```
 
 # Session info {.unnumbered}
